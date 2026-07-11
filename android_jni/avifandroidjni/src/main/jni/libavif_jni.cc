@@ -469,9 +469,49 @@ jobject DecodeToHardwareBuffer(JNIEnv* const env, jobject encoded, int length,
   return AvifImageToJavaHardwareBuffer(env, &decoder, dst_width, dst_height);
 }
 
+jobject NextFrameToHardwareBuffer(JNIEnv* const env,
+                                  AvifDecoderWrapper* const decoder,
+                                  int target_width, int target_height) {
+  const avifResult decode_result = avifDecoderNextImage(decoder->decoder);
+  if (decode_result != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
+    return nullptr;
+  }
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
+                      &dst_height);
+  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height);
+}
+
+jobject NthFrameToHardwareBuffer(JNIEnv* const env,
+                                 AvifDecoderWrapper* const decoder, uint32_t n,
+                                 int target_width, int target_height) {
+  const avifResult decode_result = avifDecoderNthImage(decoder->decoder, n);
+  if (decode_result != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
+    return nullptr;
+  }
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
+                      &dst_height);
+  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height);
+}
+
 avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                            jobject bitmap) {
   avifResult res = avifDecoderNextImage(decoder->decoder);
+  if (res != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image. Status: %d", res);
+    return res;
+  }
+  return AvifImageToBitmap(env, decoder, bitmap);
+}
+
+avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
+                          uint32_t n, jobject bitmap) {
+  avifResult res = avifDecoderNthImage(decoder->decoder, n);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
@@ -558,11 +598,123 @@ FUNC(jboolean, decode, jobject encoded, int length, jobject bitmap,
   return DecodeNextImage(env, &decoder, bitmap) == AVIF_RESULT_OK;
 }
 
+FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
+  const uint8_t* buffer = nullptr;
+  size_t size = 0;
+  if (!ValidateDirectBuffer(env, encoded, length, &buffer, &size)) {
+    return 0;
+  }
+  std::unique_ptr<AvifDecoderWrapper> decoder(new (std::nothrow)
+                                                  AvifDecoderWrapper());
+  if (decoder == nullptr) {
+    return 0;
+  }
+  if (!CreateDecoderAndParse(decoder.get(), buffer, size,
+                             getThreadCount(threads))) {
+    return 0;
+  }
+  FIND_CLASS(avif_decoder_class, "org/aomedia/avif/android/AvifDecoder", 0);
+  GET_FIELD_ID(width_id, avif_decoder_class, "width", "I", 0);
+  GET_FIELD_ID(height_id, avif_decoder_class, "height", "I", 0);
+  GET_FIELD_ID(depth_id, avif_decoder_class, "depth", "I", 0);
+  GET_FIELD_ID(alpha_present_id, avif_decoder_class, "alphaPresent", "Z", 0);
+  GET_FIELD_ID(frame_count_id, avif_decoder_class, "frameCount", "I", 0);
+  GET_FIELD_ID(repetition_count_id, avif_decoder_class, "repetitionCount", "I",
+               0);
+  GET_FIELD_ID(frame_durations_id, avif_decoder_class, "frameDurations", "[D",
+               0);
+  env->SetIntField(thiz, width_id, decoder->crop.width);
+  CHECK_EXCEPTION(0);
+  env->SetIntField(thiz, height_id, decoder->crop.height);
+  CHECK_EXCEPTION(0);
+  env->SetIntField(thiz, depth_id, decoder->decoder->image->depth);
+  CHECK_EXCEPTION(0);
+  env->SetBooleanField(thiz, alpha_present_id, decoder->decoder->alphaPresent);
+  CHECK_EXCEPTION(0);
+  env->SetIntField(thiz, repetition_count_id,
+                   decoder->decoder->repetitionCount);
+  CHECK_EXCEPTION(0);
+  const int frameCount = decoder->decoder->imageCount;
+  env->SetIntField(thiz, frame_count_id, frameCount);
+  CHECK_EXCEPTION(0);
+  std::unique_ptr<double[]> native_durations(
+      new (std::nothrow) double[frameCount]);
+  if (native_durations == nullptr) {
+    return 0;
+  }
+  for (int i = 0; i < frameCount; ++i) {
+    avifImageTiming timing;
+    if (avifDecoderNthImageTiming(decoder->decoder, i, &timing) !=
+        AVIF_RESULT_OK) {
+      return 0;
+    }
+    native_durations[i] = timing.duration;
+  }
+  jdoubleArray durations = env->NewDoubleArray(frameCount);
+  if (durations == nullptr) {
+    return 0;
+  }
+  env->SetDoubleArrayRegion(durations, /*start=*/0, frameCount,
+                            native_durations.get());
+  CHECK_EXCEPTION(0);
+  env->SetObjectField(thiz, frame_durations_id, durations);
+  CHECK_EXCEPTION(0);
+  return reinterpret_cast<jlong>(decoder.release());
+}
+
+#undef GET_FIELD_ID
+#undef FIND_CLASS
+#undef CHECK_EXCEPTION
+
+FUNC(jint, nextFrame, jlong jdecoder, jobject bitmap) {
+  IGNORE_UNUSED_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  return DecodeNextImage(env, decoder, bitmap);
+}
+
+FUNC(jint, nextFrameIndex, jlong jdecoder) {
+  IGNORE_UNUSED_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  return decoder->decoder->imageIndex + 1;
+}
+
+FUNC(jint, nthFrame, jlong jdecoder, jint n, jobject bitmap) {
+  IGNORE_UNUSED_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  return DecodeNthImage(env, decoder, n, bitmap);
+}
+
 HW_FUNC(jobject, decodeToHardwareBufferNative, jobject encoded, int length,
         jint target_width, jint target_height, jint threads) {
   IGNORE_UNUSED_HW_JNI_PARAMETERS;
   return DecodeToHardwareBuffer(env, encoded, length, target_width,
                                 target_height, threads);
+}
+
+HW_FUNC(jobject, nextFrameHardwareBufferNative, jlong jdecoder, jint target_width,
+        jint target_height) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  if (decoder == nullptr) {
+    return nullptr;
+  }
+  return NextFrameToHardwareBuffer(env, decoder, target_width, target_height);
+}
+
+HW_FUNC(jobject, nthFrameHardwareBufferNative, jlong jdecoder, jint n,
+        jint target_width, jint target_height) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  if (decoder == nullptr) {
+    return nullptr;
+  }
+  return NthFrameToHardwareBuffer(env, decoder, static_cast<uint32_t>(n),
+                                  target_width, target_height);
 }
 
 FUNC(jstring, resultToString, jint result) {
@@ -585,4 +737,11 @@ FUNC(jstring, versionString) {
   snprintf(version_string, sizeof(version_string), "libavif: %s. Codecs: %s.%s",
            avifVersion(), codec_versions, libyuv_version);
   return env->NewStringUTF(version_string);
+}
+
+FUNC(void, destroyDecoder, jlong jdecoder) {
+  IGNORE_UNUSED_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  delete decoder;
 }

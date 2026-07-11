@@ -10,7 +10,7 @@
 # Members of these classes may be accessed from native methods. Keep them
 # unobfuscated.
 -keep class org.aomedia.avif.android.AvifDecoder {
-  public *;
+  *;
 }
 -keep class org.aomedia.avif.android.AvifDecoder$Info {
   *;

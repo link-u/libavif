@@ -42,6 +42,10 @@ $ cd ..
 The Android dav1d build is configured with `-Dbitdepths=8` (8-bit AV1 only). Re-run the
 script after changing this option so that all ABIs are rebuilt.
 
+Instrumented tests assume this 8-bit-only dav1d build: 10/12-bit assets are still parsed via
+`getInfo`, but decode APIs are expected to fail for those streams. If you rebuild dav1d with full
+bitdepths (`-Dbitdepths=8,16`), update the tests accordingly.
+
 If you want to use libgav1 instead:
 
 ```
@@ -85,6 +89,10 @@ Step 1 - Build the library
 
 Make sure to build the library by following the steps under
 [Generate the AAR package](#generate-the-aar-package) section above.
+
+These tests assume the default Android dav1d build (`-Dbitdepths=8`). Decode success
+cases cover 8-bit images only; 10/12-bit assets verify `getInfo` and clean decode
+failure.
 
 Step 2 - Set up a device/emulator
 
