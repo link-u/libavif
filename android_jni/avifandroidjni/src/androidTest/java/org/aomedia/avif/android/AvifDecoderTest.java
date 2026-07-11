@@ -273,7 +273,7 @@ public class AvifDecoderTest {
     assertThat(AvifDecoder.getInfo(buffer, buffer.remaining(), info)).isTrue();
 
     HardwareBuffer hardwareBuffer =
-        AvifDecoder.decodeToHardwareBuffer(buffer, buffer.remaining(), image.threads);
+        AvifHardwareDecoder.decodeToHardwareBuffer(buffer, buffer.remaining(), image.threads);
     assertThat(hardwareBuffer).isNotNull();
     assertThat(hardwareBuffer.getWidth()).isEqualTo(info.width);
     assertThat(hardwareBuffer.getHeight()).isEqualTo(info.height);
@@ -284,7 +284,7 @@ public class AvifDecoderTest {
       int targetWidth = (int) (info.width * scaleFactor);
       int targetHeight = (int) (info.height * scaleFactor);
       hardwareBuffer =
-          AvifDecoder.decodeToHardwareBuffer(
+          AvifHardwareDecoder.decodeToHardwareBuffer(
               buffer, buffer.remaining(), targetWidth, targetHeight, image.threads);
       assertThat(hardwareBuffer).isNotNull();
       assertThat(hardwareBuffer.getWidth()).isEqualTo(targetWidth);
@@ -313,14 +313,16 @@ public class AvifDecoderTest {
     assertThat(decoder).isNotNull();
     for (int i = 0; i < image.frameCount; ++i) {
       assertThat(decoder.nextFrameIndex()).isEqualTo(i);
-      HardwareBuffer hardwareBuffer = decoder.nextFrameHardwareBuffer();
+      HardwareBuffer hardwareBuffer = AvifHardwareDecoder.nextFrameHardwareBuffer(
+          decoder.getNativeDecoderHandle());
       assertThat(hardwareBuffer).isNotNull();
       assertThat(hardwareBuffer.getWidth()).isEqualTo(image.width);
       assertThat(hardwareBuffer.getHeight()).isEqualTo(image.height);
       hardwareBuffer.close();
     }
     if (image.isAnimated) {
-      HardwareBuffer hardwareBuffer = decoder.nthFrameHardwareBuffer(0);
+      HardwareBuffer hardwareBuffer =
+          AvifHardwareDecoder.nthFrameHardwareBuffer(decoder.getNativeDecoderHandle(), 0);
       assertThat(hardwareBuffer).isNotNull();
       hardwareBuffer.close();
     }

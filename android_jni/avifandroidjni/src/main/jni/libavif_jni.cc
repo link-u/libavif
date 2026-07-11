@@ -4,13 +4,15 @@
 #include <android/api-level.h>
 #include <android/bitmap.h>
 #include <android/hardware_buffer.h>
-#include <android/hardware_buffer_jni.h>
 #include <android/log.h>
 #include <cpu-features.h>
+#include <dlfcn.h>
 #include <jni.h>
+#include <sys/system_properties.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <new>
 
@@ -28,11 +30,124 @@
   JNIEXPORT RETURN_TYPE Java_org_aomedia_avif_android_AvifDecoder_##NAME( \
       JNIEnv* env, jobject thiz, ##__VA_ARGS__)
 
+#define HW_FUNC(RETURN_TYPE, NAME, ...)                                           \
+  extern "C" {                                                                    \
+  JNIEXPORT RETURN_TYPE                                                           \
+  Java_org_aomedia_avif_android_AvifHardwareDecoder_##NAME(JNIEnv* env, jclass clazz, \
+                                                           ##__VA_ARGS__);        \
+  }                                                                               \
+  JNIEXPORT RETURN_TYPE                                                           \
+  Java_org_aomedia_avif_android_AvifHardwareDecoder_##NAME(JNIEnv* env, jclass clazz, \
+                                                           ##__VA_ARGS__)
+
 #define IGNORE_UNUSED_JNI_PARAMETERS \
-  (void) env; \
-  (void) thiz
+  (void)env;                         \
+  (void)thiz
+
+#define IGNORE_UNUSED_HW_JNI_PARAMETERS \
+  (void)env;                            \
+  (void)clazz
 
 namespace {
+
+using AHardwareBuffer_allocate_fn = int (*)(const AHardwareBuffer_Desc*, AHardwareBuffer**);
+using AHardwareBuffer_describe_fn = void (*)(const AHardwareBuffer*, AHardwareBuffer_Desc*);
+using AHardwareBuffer_lock_fn = int (*)(AHardwareBuffer*, uint64_t, int32_t, const ARect*,
+                                        void**);
+using AHardwareBuffer_unlock_fn = int (*)(AHardwareBuffer*, int32_t*);
+using AHardwareBuffer_release_fn = void (*)(AHardwareBuffer*);
+using AHardwareBuffer_toHardwareBuffer_fn = jobject (*)(JNIEnv*, AHardwareBuffer*);
+
+struct HardwareBufferApi {
+  void* android_library = nullptr;
+  void* nativewindow_library = nullptr;
+  AHardwareBuffer_allocate_fn allocate = nullptr;
+  AHardwareBuffer_describe_fn describe = nullptr;
+  AHardwareBuffer_lock_fn lock = nullptr;
+  AHardwareBuffer_unlock_fn unlock = nullptr;
+  AHardwareBuffer_release_fn release = nullptr;
+  AHardwareBuffer_toHardwareBuffer_fn to_hardware_buffer = nullptr;
+  bool init_attempted = false;
+  bool init_succeeded = false;
+};
+
+HardwareBufferApi g_hardware_buffer_api;
+
+int GetDeviceApiLevel() {
+  if (android_get_device_api_level != nullptr) {
+    const int api_level = android_get_device_api_level();
+    if (api_level > 0) {
+      return api_level;
+    }
+  }
+
+  char sdk_version[PROP_VALUE_MAX] = {};
+  if (__system_property_get("ro.build.version.sdk", sdk_version) <= 0) {
+    return 0;
+  }
+  return atoi(sdk_version);
+}
+
+bool EnsureHardwareBufferApiLoaded() {
+  if (g_hardware_buffer_api.init_attempted) {
+    return g_hardware_buffer_api.init_succeeded;
+  }
+  g_hardware_buffer_api.init_attempted = true;
+
+  if (GetDeviceApiLevel() < 29) {
+    LOGE("HardwareBuffer decode requires API 29+.");
+    return false;
+  }
+
+  g_hardware_buffer_api.android_library = dlopen("libandroid.so", RTLD_NOW);
+  if (g_hardware_buffer_api.android_library == nullptr) {
+    LOGE("Failed to dlopen libandroid.so: %s.", dlerror());
+    return false;
+  }
+
+  g_hardware_buffer_api.nativewindow_library = dlopen("libnativewindow.so", RTLD_NOW);
+  if (g_hardware_buffer_api.nativewindow_library == nullptr) {
+    LOGE("Failed to dlopen libnativewindow.so: %s.", dlerror());
+    dlclose(g_hardware_buffer_api.android_library);
+    g_hardware_buffer_api.android_library = nullptr;
+    return false;
+  }
+
+#define LOAD_ANDROID_SYMBOL(name)                                                     \
+  g_hardware_buffer_api.name = reinterpret_cast<AHardwareBuffer_##name##_fn>(          \
+      dlsym(g_hardware_buffer_api.android_library, "AHardwareBuffer_" #name));        \
+  if (g_hardware_buffer_api.name == nullptr) {                                        \
+    LOGE("Failed to dlsym AHardwareBuffer_" #name ": %s.", dlerror());              \
+    dlclose(g_hardware_buffer_api.nativewindow_library);                               \
+    dlclose(g_hardware_buffer_api.android_library);                                     \
+    g_hardware_buffer_api.nativewindow_library = nullptr;                               \
+    g_hardware_buffer_api.android_library = nullptr;                                  \
+    return false;                                                                     \
+  }
+
+  LOAD_ANDROID_SYMBOL(allocate);
+  LOAD_ANDROID_SYMBOL(describe);
+  LOAD_ANDROID_SYMBOL(lock);
+  LOAD_ANDROID_SYMBOL(unlock);
+  LOAD_ANDROID_SYMBOL(release);
+
+#undef LOAD_ANDROID_SYMBOL
+
+  g_hardware_buffer_api.to_hardware_buffer =
+      reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(dlsym(
+          g_hardware_buffer_api.nativewindow_library, "AHardwareBuffer_toHardwareBuffer"));
+  if (g_hardware_buffer_api.to_hardware_buffer == nullptr) {
+    LOGE("Failed to dlsym AHardwareBuffer_toHardwareBuffer: %s.", dlerror());
+    dlclose(g_hardware_buffer_api.nativewindow_library);
+    dlclose(g_hardware_buffer_api.android_library);
+    g_hardware_buffer_api.nativewindow_library = nullptr;
+    g_hardware_buffer_api.android_library = nullptr;
+    return false;
+  }
+
+  g_hardware_buffer_api.init_succeeded = true;
+  return true;
+}
 
 // RAII wrapper class that properly frees the decoder related objects on
 // destruction.
@@ -301,8 +416,7 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
 jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
                                       AvifDecoderWrapper* const decoder,
                                       uint32_t dst_width, uint32_t dst_height) {
-  if (android_get_device_api_level() < 29) {
-    LOGE("HardwareBuffer decode requires API 29+.");
+  if (!EnsureHardwareBufferApiLoaded()) {
     return nullptr;
   }
 
@@ -315,17 +429,17 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
 
   AHardwareBuffer* hw_buffer = nullptr;
-  if (AHardwareBuffer_allocate(&desc, &hw_buffer) != 0) {
+  if (g_hardware_buffer_api.allocate(&desc, &hw_buffer) != 0) {
     LOGE("AHardwareBuffer_allocate failed.");
     return nullptr;
   }
-  AHardwareBuffer_describe(hw_buffer, &desc);
+  g_hardware_buffer_api.describe(hw_buffer, &desc);
 
   void* pixels = nullptr;
-  if (AHardwareBuffer_lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
-                           -1, nullptr, &pixels) != 0) {
+  if (g_hardware_buffer_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
+                                -1, nullptr, &pixels) != 0) {
     LOGE("AHardwareBuffer_lock failed.");
-    AHardwareBuffer_release(hw_buffer);
+    g_hardware_buffer_api.release(hw_buffer);
     return nullptr;
   }
 
@@ -333,14 +447,14 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
       decoder, pixels, dst_width, dst_height,
       static_cast<size_t>(desc.stride) * 4, AVIF_RGB_FORMAT_RGBA, 8,
       AVIF_FALSE);
-  AHardwareBuffer_unlock(hw_buffer, nullptr);
+  g_hardware_buffer_api.unlock(hw_buffer, nullptr);
   if (res != AVIF_RESULT_OK) {
-    AHardwareBuffer_release(hw_buffer);
+    g_hardware_buffer_api.release(hw_buffer);
     return nullptr;
   }
 
-  jobject java_buffer = AHardwareBuffer_toHardwareBuffer(env, hw_buffer);
-  AHardwareBuffer_release(hw_buffer);
+  jobject java_buffer = g_hardware_buffer_api.to_hardware_buffer(env, hw_buffer);
+  g_hardware_buffer_api.release(hw_buffer);
   if (java_buffer == nullptr) {
     LOGE("AHardwareBuffer_toHardwareBuffer failed.");
     if (JniExceptionCheck(env)) {
@@ -503,13 +617,6 @@ FUNC(jboolean, decode, jobject encoded, int length, jobject bitmap,
   return DecodeNextImage(env, &decoder, bitmap) == AVIF_RESULT_OK;
 }
 
-FUNC(jobject, decodeToHardwareBufferNative, jobject encoded, int length,
-     jint target_width, jint target_height, jint threads) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
-  return DecodeToHardwareBuffer(env, encoded, length, target_width,
-                                target_height, threads);
-}
-
 FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
   const uint8_t* buffer = nullptr;
   size_t size = 0;
@@ -601,17 +708,24 @@ FUNC(jint, nthFrame, jlong jdecoder, jint n, jobject bitmap) {
   return DecodeNthImage(env, decoder, n, bitmap);
 }
 
-FUNC(jobject, nextFrameHardwareBuffer, jlong jdecoder, jint target_width,
-     jint target_height) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
+HW_FUNC(jobject, decodeToHardwareBufferNative, jobject encoded, int length,
+        jint target_width, jint target_height, jint threads) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  return DecodeToHardwareBuffer(env, encoded, length, target_width,
+                                target_height, threads);
+}
+
+HW_FUNC(jobject, nextFrameHardwareBufferNative, jlong jdecoder, jint target_width,
+        jint target_height) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
   AvifDecoderWrapper* const decoder =
       reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
   return NextFrameToHardwareBuffer(env, decoder, target_width, target_height);
 }
 
-FUNC(jobject, nthFrameHardwareBuffer, jlong jdecoder, jint n,
-     jint target_width, jint target_height) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
+HW_FUNC(jobject, nthFrameHardwareBufferNative, jlong jdecoder, jint n,
+        jint target_width, jint target_height) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
   AvifDecoderWrapper* const decoder =
       reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
   return NthFrameToHardwareBuffer(env, decoder, static_cast<uint32_t>(n),
