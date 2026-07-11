@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <new>
 
 #include "avif/avif.h"
@@ -67,11 +68,8 @@ struct HardwareBufferApi {
   AHardwareBuffer_unlock_fn unlock = nullptr;
   AHardwareBuffer_release_fn release = nullptr;
   AHardwareBuffer_toHardwareBuffer_fn to_hardware_buffer = nullptr;
-  bool init_attempted = false;
-  bool init_succeeded = false;
+  bool available = false;
 };
-
-HardwareBufferApi g_hardware_buffer_api;
 
 int GetDeviceApiLevel() {
   if (android_get_device_api_level != nullptr) {
@@ -88,41 +86,36 @@ int GetDeviceApiLevel() {
   return atoi(sdk_version);
 }
 
-bool EnsureHardwareBufferApiLoaded() {
-  if (g_hardware_buffer_api.init_attempted) {
-    return g_hardware_buffer_api.init_succeeded;
-  }
-  g_hardware_buffer_api.init_attempted = true;
-
+void LoadHardwareBufferApi(HardwareBufferApi* api) {
   if (GetDeviceApiLevel() < 29) {
     LOGE("HardwareBuffer decode requires API 29+.");
-    return false;
+    return;
   }
 
-  g_hardware_buffer_api.android_library = dlopen("libandroid.so", RTLD_NOW);
-  if (g_hardware_buffer_api.android_library == nullptr) {
+  api->android_library = dlopen("libandroid.so", RTLD_NOW);
+  if (api->android_library == nullptr) {
     LOGE("Failed to dlopen libandroid.so: %s.", dlerror());
-    return false;
+    return;
   }
 
-  g_hardware_buffer_api.nativewindow_library = dlopen("libnativewindow.so", RTLD_NOW);
-  if (g_hardware_buffer_api.nativewindow_library == nullptr) {
+  api->nativewindow_library = dlopen("libnativewindow.so", RTLD_NOW);
+  if (api->nativewindow_library == nullptr) {
     LOGE("Failed to dlopen libnativewindow.so: %s.", dlerror());
-    dlclose(g_hardware_buffer_api.android_library);
-    g_hardware_buffer_api.android_library = nullptr;
-    return false;
+    dlclose(api->android_library);
+    api->android_library = nullptr;
+    return;
   }
 
 #define LOAD_ANDROID_SYMBOL(name)                                                     \
-  g_hardware_buffer_api.name = reinterpret_cast<AHardwareBuffer_##name##_fn>(          \
-      dlsym(g_hardware_buffer_api.android_library, "AHardwareBuffer_" #name));        \
-  if (g_hardware_buffer_api.name == nullptr) {                                        \
-    LOGE("Failed to dlsym AHardwareBuffer_" #name ": %s.", dlerror());              \
-    dlclose(g_hardware_buffer_api.nativewindow_library);                               \
-    dlclose(g_hardware_buffer_api.android_library);                                     \
-    g_hardware_buffer_api.nativewindow_library = nullptr;                               \
-    g_hardware_buffer_api.android_library = nullptr;                                  \
-    return false;                                                                     \
+  api->name = reinterpret_cast<AHardwareBuffer_##name##_fn>(                          \
+      dlsym(api->android_library, "AHardwareBuffer_" #name));                         \
+  if (api->name == nullptr) {                                                         \
+    LOGE("Failed to dlsym AHardwareBuffer_" #name ": %s.", dlerror());                \
+    dlclose(api->nativewindow_library);                                               \
+    dlclose(api->android_library);                                                      \
+    api->nativewindow_library = nullptr;                                                \
+    api->android_library = nullptr;                                                     \
+    return;                                                                           \
   }
 
   LOAD_ANDROID_SYMBOL(allocate);
@@ -133,20 +126,25 @@ bool EnsureHardwareBufferApiLoaded() {
 
 #undef LOAD_ANDROID_SYMBOL
 
-  g_hardware_buffer_api.to_hardware_buffer =
-      reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(dlsym(
-          g_hardware_buffer_api.nativewindow_library, "AHardwareBuffer_toHardwareBuffer"));
-  if (g_hardware_buffer_api.to_hardware_buffer == nullptr) {
+  api->to_hardware_buffer = reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(
+      dlsym(api->nativewindow_library, "AHardwareBuffer_toHardwareBuffer"));
+  if (api->to_hardware_buffer == nullptr) {
     LOGE("Failed to dlsym AHardwareBuffer_toHardwareBuffer: %s.", dlerror());
-    dlclose(g_hardware_buffer_api.nativewindow_library);
-    dlclose(g_hardware_buffer_api.android_library);
-    g_hardware_buffer_api.nativewindow_library = nullptr;
-    g_hardware_buffer_api.android_library = nullptr;
-    return false;
+    dlclose(api->nativewindow_library);
+    dlclose(api->android_library);
+    api->nativewindow_library = nullptr;
+    api->android_library = nullptr;
+    return;
   }
 
-  g_hardware_buffer_api.init_succeeded = true;
-  return true;
+  api->available = true;
+}
+
+const HardwareBufferApi& GetHardwareBufferApi() {
+  static std::once_flag init_flag;
+  static HardwareBufferApi api;
+  std::call_once(init_flag, []() { LoadHardwareBufferApi(&api); });
+  return api;
 }
 
 // RAII wrapper class that properly frees the decoder related objects on
@@ -416,7 +414,8 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
 jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
                                       AvifDecoderWrapper* const decoder,
                                       uint32_t dst_width, uint32_t dst_height) {
-  if (!EnsureHardwareBufferApiLoaded()) {
+  const HardwareBufferApi& hw_api = GetHardwareBufferApi();
+  if (!hw_api.available) {
     return nullptr;
   }
 
@@ -429,17 +428,17 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
 
   AHardwareBuffer* hw_buffer = nullptr;
-  if (g_hardware_buffer_api.allocate(&desc, &hw_buffer) != 0) {
+  if (hw_api.allocate(&desc, &hw_buffer) != 0) {
     LOGE("AHardwareBuffer_allocate failed.");
     return nullptr;
   }
-  g_hardware_buffer_api.describe(hw_buffer, &desc);
+  hw_api.describe(hw_buffer, &desc);
 
   void* pixels = nullptr;
-  if (g_hardware_buffer_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
-                                -1, nullptr, &pixels) != 0) {
+  if (hw_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, nullptr,
+                  &pixels) != 0) {
     LOGE("AHardwareBuffer_lock failed.");
-    g_hardware_buffer_api.release(hw_buffer);
+    hw_api.release(hw_buffer);
     return nullptr;
   }
 
@@ -447,14 +446,14 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
       decoder, pixels, dst_width, dst_height,
       static_cast<size_t>(desc.stride) * 4, AVIF_RGB_FORMAT_RGBA, 8,
       AVIF_FALSE);
-  g_hardware_buffer_api.unlock(hw_buffer, nullptr);
+  hw_api.unlock(hw_buffer, nullptr);
   if (res != AVIF_RESULT_OK) {
-    g_hardware_buffer_api.release(hw_buffer);
+    hw_api.release(hw_buffer);
     return nullptr;
   }
 
-  jobject java_buffer = g_hardware_buffer_api.to_hardware_buffer(env, hw_buffer);
-  g_hardware_buffer_api.release(hw_buffer);
+  jobject java_buffer = hw_api.to_hardware_buffer(env, hw_buffer);
+  hw_api.release(hw_buffer);
   if (java_buffer == nullptr) {
     LOGE("AHardwareBuffer_toHardwareBuffer failed.");
     if (JniExceptionCheck(env)) {
@@ -488,49 +487,9 @@ jobject DecodeToHardwareBuffer(JNIEnv* const env, jobject encoded, int length,
   return AvifImageToJavaHardwareBuffer(env, &decoder, dst_width, dst_height);
 }
 
-jobject NextFrameToHardwareBuffer(JNIEnv* const env,
-                                  AvifDecoderWrapper* const decoder,
-                                  int target_width, int target_height) {
-  const avifResult decode_result = avifDecoderNextImage(decoder->decoder);
-  if (decode_result != AVIF_RESULT_OK) {
-    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
-    return nullptr;
-  }
-  uint32_t dst_width = 0;
-  uint32_t dst_height = 0;
-  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
-                      &dst_height);
-  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height);
-}
-
-jobject NthFrameToHardwareBuffer(JNIEnv* const env,
-                                 AvifDecoderWrapper* const decoder, uint32_t n,
-                                 int target_width, int target_height) {
-  const avifResult decode_result = avifDecoderNthImage(decoder->decoder, n);
-  if (decode_result != AVIF_RESULT_OK) {
-    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
-    return nullptr;
-  }
-  uint32_t dst_width = 0;
-  uint32_t dst_height = 0;
-  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
-                      &dst_height);
-  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height);
-}
-
 avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                            jobject bitmap) {
   avifResult res = avifDecoderNextImage(decoder->decoder);
-  if (res != AVIF_RESULT_OK) {
-    LOGE("Failed to decode AVIF image. Status: %d", res);
-    return res;
-  }
-  return AvifImageToBitmap(env, decoder, bitmap);
-}
-
-avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
-                          uint32_t n, jobject bitmap) {
-  avifResult res = avifDecoderNthImage(decoder->decoder, n);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
@@ -617,119 +576,11 @@ FUNC(jboolean, decode, jobject encoded, int length, jobject bitmap,
   return DecodeNextImage(env, &decoder, bitmap) == AVIF_RESULT_OK;
 }
 
-FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
-  const uint8_t* buffer = nullptr;
-  size_t size = 0;
-  if (!ValidateDirectBuffer(env, encoded, length, &buffer, &size)) {
-    return 0;
-  }
-  std::unique_ptr<AvifDecoderWrapper> decoder(new (std::nothrow)
-                                                  AvifDecoderWrapper());
-  if (decoder == nullptr) {
-    return 0;
-  }
-  if (!CreateDecoderAndParse(decoder.get(), buffer, size,
-                             getThreadCount(threads))) {
-    return 0;
-  }
-  FIND_CLASS(avif_decoder_class, "org/aomedia/avif/android/AvifDecoder", 0);
-  GET_FIELD_ID(width_id, avif_decoder_class, "width", "I", 0);
-  GET_FIELD_ID(height_id, avif_decoder_class, "height", "I", 0);
-  GET_FIELD_ID(depth_id, avif_decoder_class, "depth", "I", 0);
-  GET_FIELD_ID(alpha_present_id, avif_decoder_class, "alphaPresent", "Z", 0);
-  GET_FIELD_ID(frame_count_id, avif_decoder_class, "frameCount", "I", 0);
-  GET_FIELD_ID(repetition_count_id, avif_decoder_class, "repetitionCount", "I",
-               0);
-  GET_FIELD_ID(frame_durations_id, avif_decoder_class, "frameDurations", "[D",
-               0);
-  env->SetIntField(thiz, width_id, decoder->crop.width);
-  CHECK_EXCEPTION(0);
-  env->SetIntField(thiz, height_id, decoder->crop.height);
-  CHECK_EXCEPTION(0);
-  env->SetIntField(thiz, depth_id, decoder->decoder->image->depth);
-  CHECK_EXCEPTION(0);
-  env->SetBooleanField(thiz, alpha_present_id, decoder->decoder->alphaPresent);
-  CHECK_EXCEPTION(0);
-  env->SetIntField(thiz, repetition_count_id,
-                   decoder->decoder->repetitionCount);
-  CHECK_EXCEPTION(0);
-  const int frameCount = decoder->decoder->imageCount;
-  env->SetIntField(thiz, frame_count_id, frameCount);
-  CHECK_EXCEPTION(0);
-  // This native array is needed because setting one element at a time to a Java
-  // array from the JNI layer is inefficient.
-  std::unique_ptr<double[]> native_durations(
-      new (std::nothrow) double[frameCount]);
-  if (native_durations == nullptr) {
-    return 0;
-  }
-  for (int i = 0; i < frameCount; ++i) {
-    avifImageTiming timing;
-    if (avifDecoderNthImageTiming(decoder->decoder, i, &timing) !=
-        AVIF_RESULT_OK) {
-      return 0;
-    }
-    native_durations[i] = timing.duration;
-  }
-  jdoubleArray durations = env->NewDoubleArray(frameCount);
-  if (durations == nullptr) {
-    return 0;
-  }
-  env->SetDoubleArrayRegion(durations, /*start=*/0, frameCount,
-                            native_durations.get());
-  CHECK_EXCEPTION(0);
-  env->SetObjectField(thiz, frame_durations_id, durations);
-  CHECK_EXCEPTION(0);
-  return reinterpret_cast<jlong>(decoder.release());
-}
-
-#undef GET_FIELD_ID
-#undef FIND_CLASS
-#undef CHECK_EXCEPTION
-
-FUNC(jint, nextFrame, jlong jdecoder, jobject bitmap) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  return DecodeNextImage(env, decoder, bitmap);
-}
-
-FUNC(jint, nextFrameIndex, jlong jdecoder) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  return decoder->decoder->imageIndex + 1;
-}
-
-FUNC(jint, nthFrame, jlong jdecoder, jint n, jobject bitmap) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  return DecodeNthImage(env, decoder, n, bitmap);
-}
-
 HW_FUNC(jobject, decodeToHardwareBufferNative, jobject encoded, int length,
         jint target_width, jint target_height, jint threads) {
   IGNORE_UNUSED_HW_JNI_PARAMETERS;
   return DecodeToHardwareBuffer(env, encoded, length, target_width,
                                 target_height, threads);
-}
-
-HW_FUNC(jobject, nextFrameHardwareBufferNative, jlong jdecoder, jint target_width,
-        jint target_height) {
-  IGNORE_UNUSED_HW_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  return NextFrameToHardwareBuffer(env, decoder, target_width, target_height);
-}
-
-HW_FUNC(jobject, nthFrameHardwareBufferNative, jlong jdecoder, jint n,
-        jint target_width, jint target_height) {
-  IGNORE_UNUSED_HW_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  return NthFrameToHardwareBuffer(env, decoder, static_cast<uint32_t>(n),
-                                  target_width, target_height);
 }
 
 FUNC(jstring, resultToString, jint result) {
@@ -752,11 +603,4 @@ FUNC(jstring, versionString) {
   snprintf(version_string, sizeof(version_string), "libavif: %s. Codecs: %s.%s",
            avifVersion(), codec_versions, libyuv_version);
   return env->NewStringUTF(version_string);
-}
-
-FUNC(void, destroyDecoder, jlong jdecoder) {
-  IGNORE_UNUSED_JNI_PARAMETERS;
-  AvifDecoderWrapper* const decoder =
-      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
-  delete decoder;
 }
