@@ -42,8 +42,8 @@
                                                            ##__VA_ARGS__)
 
 #define IGNORE_UNUSED_JNI_PARAMETERS \
-  (void)env;                         \
-  (void)thiz
+  (void) env; \
+  (void) thiz
 
 #define IGNORE_UNUSED_HW_JNI_PARAMETERS \
   (void)env;                            \
@@ -129,6 +129,9 @@ const HardwareBufferApi& GetHardwareBufferApi() {
   return api;
 }
 
+int getThreadCount(int threads);
+bool JniExceptionCheck(JNIEnv* env);
+
 // RAII wrapper class that properly frees the decoder related objects on
 // destruction.
 struct AvifDecoderWrapper {
@@ -176,31 +179,6 @@ bool ValidateDirectBuffer(JNIEnv* env, jobject encoded, jint length,
   }
   *out_buffer = static_cast<const uint8_t*>(address);
   *out_size = static_cast<size_t>(length);
-  return true;
-}
-
-int getThreadCount(int threads) {
-  if (threads < 0) {
-    return android_getCpuCount();
-  }
-  if (threads == 0) {
-    // Empirically, on Android devices with more than 1 core, decoding with 2
-    // threads is almost always better than using as many threads as CPU cores.
-    return std::min(android_getCpuCount(), 2);
-  }
-  return threads;
-}
-
-// Checks if there is a pending JNI exception that will be thrown when the
-// control returns to the java layer. If there is none, it will return false. If
-// there is one, then it will clear the pending exception and return true.
-// Whenever this function returns true, the caller should treat it as a fatal
-// error and return with a failure status as early as possible.
-bool JniExceptionCheck(JNIEnv* env) {
-  if (!env->ExceptionCheck()) {
-    return false;
-  }
-  env->ExceptionClear();
   return true;
 }
 
@@ -519,6 +497,31 @@ avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
   return AvifImageToBitmap(env, decoder, bitmap);
 }
 
+int getThreadCount(int threads) {
+  if (threads < 0) {
+    return android_getCpuCount();
+  }
+  if (threads == 0) {
+    // Empirically, on Android devices with more than 1 core, decoding with 2
+    // threads is almost always better than using as many threads as CPU cores.
+    return std::min(android_getCpuCount(), 2);
+  }
+  return threads;
+}
+
+// Checks if there is a pending JNI exception that will be thrown when the
+// control returns to the java layer. If there is none, it will return false. If
+// there is one, then it will clear the pending exception and return true.
+// Whenever this function returns true, the caller should treat it as a fatal
+// error and return with a failure status as early as possible.
+bool JniExceptionCheck(JNIEnv* env) {
+  if (!env->ExceptionCheck()) {
+    return false;
+  }
+  env->ExceptionClear();
+  return true;
+}
+
 }  // namespace
 
 jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
@@ -637,6 +640,8 @@ FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
   const int frameCount = decoder->decoder->imageCount;
   env->SetIntField(thiz, frame_count_id, frameCount);
   CHECK_EXCEPTION(0);
+  // This native array is needed because setting one element at a time to a Java
+  // array from the JNI layer is inefficient.
   std::unique_ptr<double[]> native_durations(
       new (std::nothrow) double[frameCount]);
   if (native_durations == nullptr) {
