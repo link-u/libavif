@@ -60,8 +60,7 @@ using AHardwareBuffer_release_fn = void (*)(AHardwareBuffer*);
 using AHardwareBuffer_toHardwareBuffer_fn = jobject (*)(JNIEnv*, AHardwareBuffer*);
 
 struct HardwareBufferApi {
-  void* android_library = nullptr;
-  void* nativewindow_library = nullptr;
+  void* library = nullptr;
   AHardwareBuffer_allocate_fn allocate = nullptr;
   AHardwareBuffer_describe_fn describe = nullptr;
   AHardwareBuffer_lock_fn lock = nullptr;
@@ -92,50 +91,33 @@ void LoadHardwareBufferApi(HardwareBufferApi* api) {
     return;
   }
 
-  api->android_library = dlopen("libandroid.so", RTLD_NOW);
-  if (api->android_library == nullptr) {
-    LOGE("Failed to dlopen libandroid.so: %s.", dlerror());
-    return;
-  }
-
-  api->nativewindow_library = dlopen("libnativewindow.so", RTLD_NOW);
-  if (api->nativewindow_library == nullptr) {
+  // All AHardwareBuffer_* symbols used here (including the JNI conversion
+  // helper) live in libnativewindow.so. Load them from a single library so
+  // symbol resolution stays consistent across API levels.
+  api->library = dlopen("libnativewindow.so", RTLD_NOW);
+  if (api->library == nullptr) {
     LOGE("Failed to dlopen libnativewindow.so: %s.", dlerror());
-    dlclose(api->android_library);
-    api->android_library = nullptr;
     return;
   }
 
-#define LOAD_ANDROID_SYMBOL(name)                                                     \
-  api->name = reinterpret_cast<AHardwareBuffer_##name##_fn>(                          \
-      dlsym(api->android_library, "AHardwareBuffer_" #name));                         \
-  if (api->name == nullptr) {                                                         \
-    LOGE("Failed to dlsym AHardwareBuffer_" #name ": %s.", dlerror());                \
-    dlclose(api->nativewindow_library);                                               \
-    dlclose(api->android_library);                                                      \
-    api->nativewindow_library = nullptr;                                                \
-    api->android_library = nullptr;                                                     \
-    return;                                                                           \
+#define LOAD_SYMBOL(field, symbol)                                          \
+  api->field = reinterpret_cast<decltype(api->field)>(dlsym(api->library,   \
+                                                            symbol));       \
+  if (api->field == nullptr) {                                              \
+    LOGE("Failed to dlsym %s: %s.", symbol, dlerror());                     \
+    dlclose(api->library);                                                  \
+    api->library = nullptr;                                                 \
+    return;                                                                 \
   }
 
-  LOAD_ANDROID_SYMBOL(allocate);
-  LOAD_ANDROID_SYMBOL(describe);
-  LOAD_ANDROID_SYMBOL(lock);
-  LOAD_ANDROID_SYMBOL(unlock);
-  LOAD_ANDROID_SYMBOL(release);
+  LOAD_SYMBOL(allocate, "AHardwareBuffer_allocate");
+  LOAD_SYMBOL(describe, "AHardwareBuffer_describe");
+  LOAD_SYMBOL(lock, "AHardwareBuffer_lock");
+  LOAD_SYMBOL(unlock, "AHardwareBuffer_unlock");
+  LOAD_SYMBOL(release, "AHardwareBuffer_release");
+  LOAD_SYMBOL(to_hardware_buffer, "AHardwareBuffer_toHardwareBuffer");
 
-#undef LOAD_ANDROID_SYMBOL
-
-  api->to_hardware_buffer = reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(
-      dlsym(api->nativewindow_library, "AHardwareBuffer_toHardwareBuffer"));
-  if (api->to_hardware_buffer == nullptr) {
-    LOGE("Failed to dlsym AHardwareBuffer_toHardwareBuffer: %s.", dlerror());
-    dlclose(api->nativewindow_library);
-    dlclose(api->android_library);
-    api->nativewindow_library = nullptr;
-    api->android_library = nullptr;
-    return;
-  }
+#undef LOAD_SYMBOL
 
   api->available = true;
 }
