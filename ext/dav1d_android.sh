@@ -34,7 +34,7 @@ ARCH_LIST=("arm" "aarch64" "x86" "x86_64")
 for i in "${!ABI_LIST[@]}"; do
   abi="${ABI_LIST[i]}"
   PATH=$PATH:${android_bin} meson setup --default-library=static --buildtype release \
-    --cross-file="../../package/crossfiles/${ARCH_LIST[i]}-android.meson" \
+    --cross-file="dav1d/package/crossfiles/${ARCH_LIST[i]}-android.meson" \
     -Dbitdepths=8 -Denable_tools=false -Denable_tests=false "dav1d/build/${abi}" dav1d
   PATH=$PATH:${android_bin} meson compile -C "dav1d/build/${abi}"
 done
