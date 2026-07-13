@@ -116,3 +116,54 @@ To build the project from within Android Studio, follow the all the steps from t
 
 Maven hosted version of libavif can be found here:
 https://repo1.maven.org/maven2/org/aomedia/avif/android/avif/
+
+## Hardware Buffer Decoding
+
+Use `AvifHardwareDecoder` on API 29+ to decode directly into `HardwareBuffer` objects suitable
+for GPU sampling (for example via `Bitmap.wrapHardwareBuffer`).
+
+By default, output uses `RGBA_8888`. Pass `allowR8 = true` to opt in to single-channel `R_8`
+output when **all** of the following hold:
+
+* The decoded image is 8-bit monochrome (`YUV400`) with no alpha plane.
+* The device runs API 35 or newer.
+* `AHardwareBuffer_isSupported` reports that `R_8` allocation is available for the requested
+  dimensions and usage (`CPU_WRITE_RARELY | GPU_SAMPLED_IMAGE`).
+
+If any condition fails, or if `AHardwareBuffer_allocate` fails for `R_8`, the decoder falls back
+to `RGBA_8888`.
+
+### Range conversion (R_8 path)
+
+Monochrome `R_8` output copies the Y plane directly instead of running the full YUV→RGB matrix.
+Limited-range Y values (16–235) are expanded to full-range 0–255 via a per-sample LUT; full-range
+Y is copied as-is. Only the range is transformed—color matrix coefficients (BT.601/709) do not
+apply to this single-channel path.
+
+### Display responsibility
+
+An `R_8` buffer stores luminance in one channel. Wrapping or drawing it without a color transform
+typically appears as red-tinted intensity. Callers must apply a `ColorMatrixColorFilter` (or
+equivalent) when presenting the buffer as grayscale or RGB.
+
+### Example
+
+```java
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+  HardwareBuffer buffer =
+      AvifHardwareDecoder.decodeToHardwareBuffer(
+          encoded, encoded.remaining(), 0, 0, threads, /* allowR8= */ true);
+  if (buffer != null) {
+    if (Build.VERSION.SDK_INT >= 35
+        && buffer.getFormat() == HardwareBuffer.R_8) {
+      // Apply a ColorMatrixColorFilter before drawing.
+    }
+    buffer.close();
+  }
+}
+```
+
+Range-specific monochrome test assets (`mono_8bpc_limited.avif`, `mono_8bpc_full.avif`) can be
+generated with
+[`generate_mono_test_assets.sh`](avifandroidjni/src/androidTest/assets/generate_mono_test_assets.sh).
+
