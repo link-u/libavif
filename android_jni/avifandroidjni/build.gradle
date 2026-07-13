@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'org.aomedia.avif.android'
-    compileSdk 35
+    compileSdk 31
     ndkVersion "25.2.9519653"
 
     defaultConfig {

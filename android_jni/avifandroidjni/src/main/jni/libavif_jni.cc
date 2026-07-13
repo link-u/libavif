@@ -102,11 +102,9 @@ void* LoadSymbolFromLibrary(void* library, const char* symbol) {
 }
 
 int GetDeviceApiLevel() {
-  if (android_get_device_api_level != nullptr) {
-    const int api_level = android_get_device_api_level();
-    if (api_level > 0) {
-      return api_level;
-    }
+  const int api_level = android_get_device_api_level();
+  if (api_level > 0) {
+    return api_level;
   }
 
   char sdk_version[PROP_VALUE_MAX] = {};
@@ -419,8 +417,13 @@ avifResult AvifImageToGrayBuffer(const HardwareBufferApi& hw_api,
   if (image->yuvRange == AVIF_RANGE_LIMITED) {
     uint8_t lut[256];
     for (int v = 0; v < 256; ++v) {
-      const int e = ((v - 16) * 255 + 109) / 219;
-      lut[v] = static_cast<uint8_t>(std::clamp(e, 0, 255));
+      int e = ((v - 16) * 255 + 109) / 219;
+      if (e < 0) {
+        e = 0;
+      } else if (e > 255) {
+        e = 255;
+      }
+      lut[v] = static_cast<uint8_t>(e);
     }
     for (uint32_t y = 0; y < height; ++y) {
       const uint8_t* src_row = src_y + y * src_row_bytes;
