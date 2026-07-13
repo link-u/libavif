@@ -60,7 +60,8 @@ using AHardwareBuffer_release_fn = void (*)(AHardwareBuffer*);
 using AHardwareBuffer_toHardwareBuffer_fn = jobject (*)(JNIEnv*, AHardwareBuffer*);
 
 struct HardwareBufferApi {
-  void* library = nullptr;
+  void* buffer_library = nullptr;
+  void* android_library = nullptr;
   AHardwareBuffer_allocate_fn allocate = nullptr;
   AHardwareBuffer_describe_fn describe = nullptr;
   AHardwareBuffer_lock_fn lock = nullptr;
@@ -69,6 +70,29 @@ struct HardwareBufferApi {
   AHardwareBuffer_toHardwareBuffer_fn to_hardware_buffer = nullptr;
   bool available = false;
 };
+
+void CloseHardwareBufferLibraries(HardwareBufferApi* api) {
+  if (api->buffer_library != nullptr) {
+    dlclose(api->buffer_library);
+    api->buffer_library = nullptr;
+  }
+  if (api->android_library != nullptr) {
+    dlclose(api->android_library);
+    api->android_library = nullptr;
+  }
+}
+
+void* LoadSymbolFromLibrary(void* library, const char* symbol) {
+  if (library == nullptr) {
+    return nullptr;
+  }
+  dlerror();
+  void* symbol_address = dlsym(library, symbol);
+  if (symbol_address == nullptr) {
+    LOGE("Failed to dlsym %s: %s.", symbol, dlerror());
+  }
+  return symbol_address;
+}
 
 int GetDeviceApiLevel() {
   if (android_get_device_api_level != nullptr) {
@@ -91,33 +115,45 @@ void LoadHardwareBufferApi(HardwareBufferApi* api) {
     return;
   }
 
-  // All AHardwareBuffer_* symbols used here (including the JNI conversion
-  // helper) live in libnativewindow.so. Load them from a single library so
-  // symbol resolution stays consistent across API levels.
-  api->library = dlopen("libnativewindow.so", RTLD_NOW);
-  if (api->library == nullptr) {
-    LOGE("Failed to dlopen libnativewindow.so: %s.", dlerror());
+  // Core AHardwareBuffer symbols are exported from libnativewindow.so and/or
+  // libandroid.so depending on the device. The JNI conversion helper
+  // AHardwareBuffer_toHardwareBuffer is exported from libandroid.so.
+  api->buffer_library = dlopen("libnativewindow.so", RTLD_NOW);
+  api->android_library = dlopen("libandroid.so", RTLD_NOW);
+  if (api->android_library == nullptr) {
+    LOGE("Failed to dlopen libandroid.so: %s.", dlerror());
+    CloseHardwareBufferLibraries(api);
     return;
   }
 
-#define LOAD_SYMBOL(field, symbol)                                          \
-  api->field = reinterpret_cast<decltype(api->field)>(dlsym(api->library,   \
-                                                            symbol));       \
-  if (api->field == nullptr) {                                              \
-    LOGE("Failed to dlsym %s: %s.", symbol, dlerror());                     \
-    dlclose(api->library);                                                  \
-    api->library = nullptr;                                                 \
-    return;                                                                 \
+  auto load_buffer_symbol = [&](const char* symbol) -> void* {
+    void* symbol_address = LoadSymbolFromLibrary(api->buffer_library, symbol);
+    if (symbol_address == nullptr) {
+      symbol_address = LoadSymbolFromLibrary(api->android_library, symbol);
+    }
+    return symbol_address;
+  };
+
+  api->allocate = reinterpret_cast<AHardwareBuffer_allocate_fn>(
+      load_buffer_symbol("AHardwareBuffer_allocate"));
+  api->describe = reinterpret_cast<AHardwareBuffer_describe_fn>(
+      load_buffer_symbol("AHardwareBuffer_describe"));
+  api->lock = reinterpret_cast<AHardwareBuffer_lock_fn>(
+      load_buffer_symbol("AHardwareBuffer_lock"));
+  api->unlock = reinterpret_cast<AHardwareBuffer_unlock_fn>(
+      load_buffer_symbol("AHardwareBuffer_unlock"));
+  api->release = reinterpret_cast<AHardwareBuffer_release_fn>(
+      load_buffer_symbol("AHardwareBuffer_release"));
+  api->to_hardware_buffer =
+      reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(LoadSymbolFromLibrary(
+          api->android_library, "AHardwareBuffer_toHardwareBuffer"));
+
+  if (api->allocate == nullptr || api->describe == nullptr ||
+      api->lock == nullptr || api->unlock == nullptr ||
+      api->release == nullptr || api->to_hardware_buffer == nullptr) {
+    CloseHardwareBufferLibraries(api);
+    return;
   }
-
-  LOAD_SYMBOL(allocate, "AHardwareBuffer_allocate");
-  LOAD_SYMBOL(describe, "AHardwareBuffer_describe");
-  LOAD_SYMBOL(lock, "AHardwareBuffer_lock");
-  LOAD_SYMBOL(unlock, "AHardwareBuffer_unlock");
-  LOAD_SYMBOL(release, "AHardwareBuffer_release");
-  LOAD_SYMBOL(to_hardware_buffer, "AHardwareBuffer_toHardwareBuffer");
-
-#undef LOAD_SYMBOL
 
   api->available = true;
 }
@@ -376,6 +412,8 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
                                       uint32_t dst_width, uint32_t dst_height) {
   const HardwareBufferApi& hw_api = GetHardwareBufferApi();
   if (!hw_api.available) {
+    LOGE("HardwareBuffer API is unavailable. Check earlier avif_jni logs for "
+         "dlopen/dlsym errors.");
     return nullptr;
   }
 
