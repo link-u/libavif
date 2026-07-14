@@ -122,29 +122,36 @@ https://repo1.maven.org/maven2/org/aomedia/avif/android/avif/
 Use `AvifHardwareDecoder` on API 29+ to decode directly into `HardwareBuffer` objects suitable
 for GPU sampling (for example via `Bitmap.wrapHardwareBuffer`).
 
-By default, output uses `RGBA_8888`. Pass `allowR8 = true` to opt in to single-channel `R_8`
-output when **all** of the following hold:
+By default, output uses `RGBA_8888`. Pass `allowGray565 = true` to opt in to **Gray565** packing
+(`HardwareBuffer.RGB_565`) when **all** of the following hold:
 
 * The decoded image is 8-bit monochrome (`YUV400`) with no alpha plane.
-* The device runs API 35 or newer.
-* `AHardwareBuffer_isSupported` reports that `R_8` allocation is available for the requested
-  dimensions and usage (`CPU_WRITE_RARELY | GPU_SAMPLED_IMAGE`).
+* `allowGray565` is `true`.
 
-If any condition fails, or if `AHardwareBuffer_allocate` fails for `R_8`, the decoder falls back
-to `RGBA_8888`.
+If any condition fails, or if `AHardwareBuffer_allocate` fails for `R5G6B5`, the decoder falls
+back to `RGBA_8888`. (`R5G6B5` is a universally supported HardwareBuffer format from API 26; the
+caller's API 29 gate for `wrapHardwareBuffer` is sufficient—there is no API 35 requirement.)
 
-### Range conversion (R_8 path)
+### Gray565 packing
 
-Monochrome `R_8` output copies the Y plane directly instead of running the full YUV→RGB matrix.
-Limited-range Y values (16–235) are expanded to full-range 0–255 via a per-sample LUT; full-range
-Y is copied as-is. Only the range is transformed—color matrix coefficients (BT.601/709) do not
-apply to this single-channel path.
+`RGB_565` here is **not** a true color RGB565 image. It is an 8-bit grayscale value packed into
+the RGB565 bit fields (R is the most-significant field):
 
-### Display responsibility
+* Encoding: `Y = 4 * G6 + (R5 & 3)`, `B5 = 0`  
+  equivalently `pixel = ((Y & 3) << 11) | ((Y >> 2) << 5)`.
+* Limited-range Y (16–235) is expanded to 0–255 in the same LUT that builds the packed value;
+  full-range Y is used as-is. Color matrix coefficients (BT.601/709) do not apply on this path.
+* Scaling (when requested) is applied with `avifImageScale` on the YUV image **before** packing.
 
-An `R_8` buffer stores luminance in one channel. Wrapping or drawing it without a color transform
-typically appears as red-tinted intensity. Callers must apply a `ColorMatrixColorFilter` (or
-equivalent) when presenting the buffer as grayscale or RGB.
+### Display responsibility (required)
+
+Drawing a Gray565 buffer without a restore transform looks like greenish noise, not grayscale.
+Callers **must** apply a restore `ColorMatrix` / `ColorMatrixColorFilter` that maps each of R, G,
+B to:
+
+`31/255 · r + 252/255 · g`
+
+(where `r`/`g` are the 8-bit expanded R/G channels from the RGB565 sample).
 
 ### Example
 
@@ -152,18 +159,17 @@ equivalent) when presenting the buffer as grayscale or RGB.
 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
   HardwareBuffer buffer =
       AvifHardwareDecoder.decodeToHardwareBuffer(
-          encoded, encoded.remaining(), 0, 0, threads, /* allowR8= */ true);
+          encoded, encoded.remaining(), 0, 0, threads, /* allowGray565= */ true);
   if (buffer != null) {
-    if (Build.VERSION.SDK_INT >= 35
-        && buffer.getFormat() == HardwareBuffer.R_8) {
-      // Apply a ColorMatrixColorFilter before drawing.
+    if (buffer.getFormat() == HardwareBuffer.RGB_565) {
+      // Apply the Gray565 restore ColorMatrix before drawing.
     }
     buffer.close();
   }
 }
 ```
 
-Range-specific monochrome test assets (`mono_8bpc_limited.avif`, `mono_8bpc_full.avif`) can be
-generated with
+Range-specific monochrome test assets (`mono_8bpc_limited.avif`, `mono_8bpc_full.avif`,
+`mono_8bpc_ramp_full.avif`) can be generated with
 [`generate_mono_test_assets.sh`](avifandroidjni/src/androidTest/assets/generate_mono_test_assets.sh).
 
