@@ -22,3 +22,12 @@ Test files for animated AVIF decoding.
 
 alpha_video.avif is patched at 0-indexed byte #259 replaced with 0x04 instead of
 0x00 as [0x00 is an invalid item_id for the iref box](https://github.com/AOMediaCodec/av1-avif/issues/217).
+
+### mono_8bpc_limited.avif, mono_8bpc_full.avif, mono_8bpc_ramp_full.avif
+
+8-bit monochrome (`YUV400`) 256×16 ramps whose columns cover every code 0–255, with explicit
+limited/full range for Gray565 LUT tests (`mono_8bpc_ramp_full.avif` is a copy of the full-range
+file used by the restore ColorMatrix golden test).
+
+Generate with [generate_mono_test_assets.sh](generate_mono_test_assets.sh) (uses
+[gen_mono_ramp.c](gen_mono_ramp.c) against a libavif+aom build, or `avifenc` if available).

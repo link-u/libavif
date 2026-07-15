@@ -116,3 +116,60 @@ To build the project from within Android Studio, follow the all the steps from t
 
 Maven hosted version of libavif can be found here:
 https://repo1.maven.org/maven2/org/aomedia/avif/android/avif/
+
+## Hardware Buffer Decoding
+
+Use `AvifHardwareDecoder` on API 29+ to decode directly into `HardwareBuffer` objects suitable
+for GPU sampling (for example via `Bitmap.wrapHardwareBuffer`).
+
+By default, output uses `RGBA_8888`. Pass `allowGray565 = true` to opt in to **Gray565** packing
+(`HardwareBuffer.RGB_565`) when **all** of the following hold:
+
+* The decoded image is 8-bit monochrome (`YUV400`) with no alpha plane.
+* `allowGray565` is `true`.
+
+If any condition fails, or if `AHardwareBuffer_allocate` fails for `R5G6B5`, the decoder falls
+back to `RGBA_8888`. (`R5G6B5` is a universally supported HardwareBuffer format from API 26; the
+caller's API 29 gate for `wrapHardwareBuffer` is sufficient—there is no API 35 requirement.)
+
+### Gray565 packing
+
+`RGB_565` here is **not** a true color RGB565 image. It is an 8-bit grayscale value packed into
+the RGB565 bit fields (R is the most-significant field):
+
+* Encoding: `Y = 4 * G6 + (R5 & 3)`, `B5 = 0`  
+  equivalently `pixel = ((Y & 3) << 11) | ((Y >> 2) << 5)`.
+* Limited-range Y (16–235) is expanded to 0–255 in the same LUT that builds the packed value;
+  full-range Y is used as-is. Color matrix coefficients (BT.601/709) do not apply on this path.
+* Scaling (when requested) is applied with `avifImageScale` on the YUV image **before** packing.
+
+### Display responsibility (required)
+
+Drawing a Gray565 buffer without a restore transform looks like greenish noise, not grayscale.
+Callers **must** apply a restore `ColorMatrix` / `ColorMatrixColorFilter` that maps each of R, G,
+B to:
+
+`31/255 · r + 252/255 · g`
+
+(where `r`/`g` are the 8-bit expanded R/G channels from the RGB565 sample).
+
+### Example
+
+```java
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+  HardwareBuffer buffer =
+      AvifHardwareDecoder.decodeToHardwareBuffer(
+          encoded, encoded.remaining(), 0, 0, threads, /* allowGray565= */ true);
+  if (buffer != null) {
+    if (buffer.getFormat() == HardwareBuffer.RGB_565) {
+      // Apply the Gray565 restore ColorMatrix before drawing.
+    }
+    buffer.close();
+  }
+}
+```
+
+Range-specific monochrome test assets (`mono_8bpc_limited.avif`, `mono_8bpc_full.avif`,
+`mono_8bpc_ramp_full.avif`) can be generated with
+[`generate_mono_test_assets.sh`](avifandroidjni/src/androidTest/assets/generate_mono_test_assets.sh).
+
