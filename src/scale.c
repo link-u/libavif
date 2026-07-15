@@ -18,8 +18,9 @@
 #pragma clang diagnostic pop
 #endif
 
-// This should be configurable and/or smarter. kFilterBox has the highest quality but is the slowest.
-#define AVIF_LIBYUV_FILTER_MODE kFilterBox
+// Match the default bilinear filtering used when Compose scales images while
+// avoiding the higher cost of kFilterBox.
+#define AVIF_LIBYUV_FILTER_MODE kFilterBilinear
 
 avifResult avifImageScaleWithLimit(avifImage * image,
                                    uint32_t dstWidth,
