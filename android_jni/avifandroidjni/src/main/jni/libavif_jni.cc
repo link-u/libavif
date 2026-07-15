@@ -17,6 +17,10 @@
 #include <mutex>
 #include <new>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 #include "avif/avif.h"
 
 #define LOG_TAG "avif_jni"
@@ -441,6 +445,71 @@ const uint16_t* Gray565Lut(avifRange range) {
                                      : kGray565LutFull.data;
 }
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+// Pack 8 full-range Y samples: R5=Y[1:0], G6=Y[7:2], B5=0.
+static uint16x8_t PackGray565Neon(uint16x8_t y) {
+  const uint16x8_t lo = vandq_u16(y, vdupq_n_u16(3));
+  const uint16x8_t hi = vshrq_n_u16(y, 2);
+  return vorrq_u16(vshlq_n_u16(lo, 11), vshlq_n_u16(hi, 5));
+}
+
+// Limited [16,235] → full [0,255]: e = ((y-16)*255+109)/219, with y clamped.
+// Uses (n * 1197) >> 18, exact for all 8-bit inputs after clamp.
+static uint16x8_t LimitedToFull8Neon(uint8x8_t y8) {
+  y8 = vmax_u8(y8, vdup_n_u8(16));
+  y8 = vmin_u8(y8, vdup_n_u8(235));
+  const uint16x8_t t = vsubq_u16(vmovl_u8(y8), vdupq_n_u16(16));
+  // n = t * 255 + 109 fits in uint16 (max 55984).
+  const uint16x8_t n = vmlaq_n_u16(vdupq_n_u16(109), t, 255);
+  const uint32x4_t e_lo = vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_low_u16(n)), 1197), 18);
+  const uint32x4_t e_hi =
+      vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_high_u16(n)), 1197), 18);
+  return vcombine_u16(vmovn_u32(e_lo), vmovn_u32(e_hi));
+}
+
+static void PackGray565RowNeon(const uint8_t* src, uint16_t* dst, uint32_t width,
+                               avifRange range) {
+  const bool limited = range == AVIF_RANGE_LIMITED;
+  uint32_t x = 0;
+  if (limited) {
+    for (; x + 16 <= width; x += 16) {
+      const uint8x16_t y8 = vld1q_u8(src + x);
+      vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vget_low_u8(y8))));
+      vst1q_u16(dst + x + 8,
+                PackGray565Neon(LimitedToFull8Neon(vget_high_u8(y8))));
+    }
+    for (; x + 8 <= width; x += 8) {
+      vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vld1_u8(src + x))));
+    }
+  } else {
+    for (; x + 16 <= width; x += 16) {
+      const uint8x16_t y8 = vld1q_u8(src + x);
+      vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vget_low_u8(y8))));
+      vst1q_u16(dst + x + 8, PackGray565Neon(vmovl_u8(vget_high_u8(y8))));
+    }
+    for (; x + 8 <= width; x += 8) {
+      vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
+    }
+  }
+  const uint16_t* lut = Gray565Lut(range);
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+#endif  // __ARM_NEON
+
+static void PackGray565Row(const uint8_t* src, uint16_t* dst, uint32_t width,
+                           avifRange range) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+  PackGray565RowNeon(src, dst, width, range);
+#else
+  const uint16_t* lut = Gray565Lut(range);
+  for (uint32_t x = 0; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+#endif
+}
+
 avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
                                     AHardwareBuffer* hw_buffer,
                                     avifImage* image, size_t dst_row_bytes) {
@@ -451,20 +520,18 @@ avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
 
-  const uint16_t* lut = Gray565Lut(image->yuvRange);
   const uint8_t* src_y = image->yuvPlanes[AVIF_CHAN_Y];
   const uint32_t width = image->width;
   const uint32_t height = image->height;
   const size_t src_row_bytes = image->yuvRowBytes[AVIF_CHAN_Y];
   uint8_t* dst_bytes = static_cast<uint8_t*>(pixels);
+  const avifRange range = image->yuvRange;
 
   for (uint32_t row = 0; row < height; ++row) {
     const uint8_t* src_row = src_y + row * src_row_bytes;
     uint16_t* dst_row =
         reinterpret_cast<uint16_t*>(dst_bytes + row * dst_row_bytes);
-    for (uint32_t x = 0; x < width; ++x) {
-      dst_row[x] = lut[src_row[x]];
-    }
+    PackGray565Row(src_row, dst_row, width, range);
   }
 
   hw_api.unlock(hw_buffer, nullptr);
