@@ -386,14 +386,60 @@ avifResult AvifImageToRGBBuffer(AvifDecoderWrapper* const decoder, void* pixels,
   return res;
 }
 
-// Packs 8-bit grayscale into RGB565 as R5[15:11]=Y[1:0], G6[10:5]=Y[7:2],
-// B5[4:0]=0. Display-side ColorMatrix (31/255·R + 252/255·G) recovers Y.
+// Packs 8-bit Y into RGB565 as R5[15:11]=Y[1:0], G6[10:5]=Y[7:2], B5[4:0]=0.
+// Display-side ColorMatrix (31/255·R + 252/255·G) recovers Y.
+constexpr uint16_t PackGray565(uint8_t y) {
+  const uint16_t hi = static_cast<uint16_t>(y >> 2);  // upper 6 bits → G
+  const uint16_t lo = static_cast<uint16_t>(y & 3);   // lower 2 bits → R
+  return static_cast<uint16_t>((lo << 11) | (hi << 5));  // B=0
+}
+
+constexpr uint8_t LimitedToFull8(int v) {
+  const int e = ((v - 16) * 255 + 109) / 219;
+  if (e < 0) {
+    return 0;
+  }
+  if (e > 255) {
+    return 255;
+  }
+  return static_cast<uint8_t>(e);
+}
+
+// Full-range: identity then pack. Limited-range: expand [16,235] → [0,255]
+// then pack. Compile-time tables in .rodata.
+// Plain arrays (not std::array): non-const std::array::operator[] is only
+// constexpr in C++17+, while the Android NDK JNI target defaults older.
+struct Gray565LutTable {
+  uint16_t data[256];
+};
+
+constexpr Gray565LutTable MakeGray565LutFull() {
+  Gray565LutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = PackGray565(static_cast<uint8_t>(v));
+  }
+  return table;
+}
+
+constexpr Gray565LutTable MakeGray565LutLimited() {
+  Gray565LutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = PackGray565(LimitedToFull8(v));
+  }
+  return table;
+}
+
+constexpr Gray565LutTable kGray565LutFull = MakeGray565LutFull();
+constexpr Gray565LutTable kGray565LutLimited = MakeGray565LutLimited();
+
+const uint16_t* Gray565Lut(avifRange range) {
+  return range == AVIF_RANGE_LIMITED ? kGray565LutLimited.data
+                                     : kGray565LutFull.data;
+}
+
 avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
                                     AHardwareBuffer* hw_buffer,
-                                    avifImage* image) {
-  AHardwareBuffer_Desc desc;
-  hw_api.describe(hw_buffer, &desc);
-
+                                    avifImage* image, size_t dst_row_bytes) {
   void* pixels = nullptr;
   if (hw_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, nullptr,
                   &pixels) != 0) {
@@ -401,25 +447,7 @@ avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
 
-  uint16_t lut[256];
-  for (int v = 0; v < 256; ++v) {
-    uint8_t y;
-    if (image->yuvRange == AVIF_RANGE_LIMITED) {
-      int e = ((v - 16) * 255 + 109) / 219;
-      if (e < 0) {
-        e = 0;
-      } else if (e > 255) {
-        e = 255;
-      }
-      y = static_cast<uint8_t>(e);
-    } else {
-      y = static_cast<uint8_t>(v);
-    }
-    const uint16_t hi = static_cast<uint16_t>(y >> 2);  // upper 6 bits → G
-    const uint16_t lo = static_cast<uint16_t>(y & 3);   // lower 2 bits → R
-    lut[v] = static_cast<uint16_t>((lo << 11) | (hi << 5));  // B=0
-  }
-
+  const uint16_t* lut = Gray565Lut(image->yuvRange);
   const uint8_t* src_y = image->yuvPlanes[AVIF_CHAN_Y];
   const uint32_t width = image->width;
   const uint32_t height = image->height;
@@ -429,7 +457,7 @@ avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
   for (uint32_t row = 0; row < height; ++row) {
     const uint8_t* src_row = src_y + row * src_row_bytes;
     uint16_t* dst_row =
-        reinterpret_cast<uint16_t*>(dst_bytes + row * desc.stride);
+        reinterpret_cast<uint16_t*>(dst_bytes + row * dst_row_bytes);
     for (uint32_t x = 0; x < width; ++x) {
       dst_row[x] = lut[src_row[x]];
     }
@@ -545,7 +573,10 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
 
   avifResult fill_res;
   if (use_gray565) {
-    fill_res = AvifImageToGray565Buffer(hw_api, hw_buffer, image);
+    // AHardwareBuffer_Desc.stride is in pixels, not bytes (same as the RGBA
+    // path's `desc.stride * 4`). RGB565 is 2 bytes/pixel.
+    fill_res = AvifImageToGray565Buffer(
+        hw_api, hw_buffer, image, static_cast<size_t>(desc.stride) * 2);
   } else {
     void* pixels = nullptr;
     if (hw_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, nullptr,
