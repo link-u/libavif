@@ -286,7 +286,7 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
                                  std::unique_ptr<avifImage, decltype(&avifImageDestroy)>&
                                      cropped_image,
                                  std::unique_ptr<avifImage, decltype(&avifImageDestroy)>&
-                                     image_copy) {
+                                     scaling_image) {
   avifImage* image;
   if (decoder->decoder->image->width == decoder->crop.width &&
       decoder->decoder->image->height == decoder->crop.height &&
@@ -308,19 +308,23 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
     image = cropped_image.get();
   }
   if (image->width != dst_width || image->height != dst_height) {
-    if (!image->imageOwnsYUVPlanes || !image->imageOwnsAlphaPlane) {
-      image_copy.reset(avifImageCreateEmpty());
-      if (image_copy == nullptr) {
-        LOGE("Failed to allocate image for scaling.");
+    if (image == decoder->decoder->image) {
+      // Scale a non-owning full-image view so that the decoder image remains
+      // unchanged. avifImageScale() can read non-owning source planes directly
+      // and allocates only the destination planes.
+      scaling_image.reset(avifImageCreateEmpty());
+      if (scaling_image == nullptr) {
+        LOGE("Failed to allocate image view for scaling.");
         *res = AVIF_RESULT_OUT_OF_MEMORY;
         return nullptr;
       }
-      *res = avifImageCopy(image_copy.get(), image, AVIF_PLANES_ALL);
+      const avifCropRect full_image = {0, 0, image->width, image->height};
+      *res = avifImageSetViewRect(scaling_image.get(), image, &full_image);
       if (*res != AVIF_RESULT_OK) {
-        LOGE("Failed to make a copy of the image for scaling. Status: %d", *res);
+        LOGE("Failed to create image view for scaling. Status: %d", *res);
         return nullptr;
       }
-      image = image_copy.get();
+      image = scaling_image.get();
     }
     avifDiagnostics diag;
     *res = avifImageScale(image, dst_width, dst_height, &diag);
@@ -359,10 +363,10 @@ avifResult AvifImageToRGBBuffer(AvifDecoderWrapper* const decoder, void* pixels,
   avifResult res;
   std::unique_ptr<avifImage, decltype(&avifImageDestroy)> cropped_image(
       nullptr, avifImageDestroy);
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> image_copy(
+  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
       nullptr, avifImageDestroy);
   avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
-                                           cropped_image, image_copy);
+                                           cropped_image, scaling_image);
   if (image == nullptr) {
     return res;
   }
@@ -536,10 +540,10 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
   avifResult res;
   std::unique_ptr<avifImage, decltype(&avifImageDestroy)> cropped_image(
       nullptr, avifImageDestroy);
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> image_copy(
+  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
       nullptr, avifImageDestroy);
   avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
-                                           cropped_image, image_copy);
+                                           cropped_image, scaling_image);
   if (image == nullptr) {
     return nullptr;
   }
