@@ -1,4 +1,7 @@
 set(AVIF_DAV1D_TAG "1.5.3")
+# Android JNI pulls link-u/dav1d (avif branch) instead of upstream videolan.
+set(AVIF_DAV1D_ANDROID_GIT_REPOSITORY "https://github.com/link-u/dav1d.git")
+set(AVIF_DAV1D_ANDROID_GIT_TAG "avif")
 
 function(avif_build_local_dav1d)
     set(download_step_args)
@@ -8,9 +11,15 @@ function(avif_build_local_dav1d)
     else()
         message(STATUS "libavif(AVIF_CODEC_DAV1D=LOCAL): ext/dav1d not found, fetching")
         set(source_dir "${FETCHCONTENT_BASE_DIR}/dav1d-src")
-        list(APPEND download_step_args GIT_REPOSITORY https://code.videolan.org/videolan/dav1d.git GIT_TAG ${AVIF_DAV1D_TAG}
-             GIT_SHALLOW ON
-        )
+        if(ANDROID)
+            list(APPEND download_step_args GIT_REPOSITORY ${AVIF_DAV1D_ANDROID_GIT_REPOSITORY}
+                 GIT_TAG ${AVIF_DAV1D_ANDROID_GIT_TAG} GIT_SHALLOW ON
+            )
+        else()
+            list(APPEND download_step_args GIT_REPOSITORY https://code.videolan.org/videolan/dav1d.git
+                 GIT_TAG ${AVIF_DAV1D_TAG} GIT_SHALLOW ON
+            )
+        endif()
     endif()
 
     find_program(NINJA_EXECUTABLE NAMES ninja ninja-build REQUIRED)
@@ -76,6 +85,8 @@ function(avif_build_local_dav1d)
 
     if(ANDROID)
         set(DAV1D_BITDEPTHS_ARG -Dbitdepths=8)
+        # Match android_jni LTO so libdav1d.a contains bitcode for the final .so link.
+        set(DAV1D_LTO_ARG -Db_lto=true)
     endif()
 
     ExternalProject_Add(
@@ -93,7 +104,7 @@ function(avif_build_local_dav1d)
         CONFIGURE_COMMAND
             ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${MESON_EXECUTABLE} setup --buildtype=release --default-library=static
             --prefix=<INSTALL_DIR> --libdir=lib -Denable_asm=true -Denable_tools=false -Denable_examples=false
-            -Denable_tests=false ${DAV1D_BITDEPTHS_ARG} ${EXTRA_ARGS} <SOURCE_DIR>
+            -Denable_tests=false ${DAV1D_BITDEPTHS_ARG} ${DAV1D_LTO_ARG} ${EXTRA_ARGS} <SOURCE_DIR>
         BUILD_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR>
         INSTALL_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR> install
         BUILD_BYPRODUCTS <INSTALL_DIR>/lib/libdav1d.a

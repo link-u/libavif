@@ -39,8 +39,18 @@ $ ./dav1d_android.sh "${ANDROID_NDK_HOME}"
 $ cd ..
 ```
 
+`dav1d_android.sh` clones [link-u/dav1d](https://github.com/link-u/dav1d)
+(`avif` branch). If `ext/dav1d` is absent, the Android JNI CMake LOCAL path
+fetches the same repository/branch via `LocalDav1d.cmake`.
+
 The Android dav1d build is configured with `-Dbitdepths=8` (8-bit AV1 only). Re-run the
 script after changing this option so that all ABIs are rebuilt.
+
+The Android JNI Release build enables LTO/IPO (`AVIF_ANDROID_ENABLE_LTO`, default ON).
+`dav1d_android.sh` and `libyuv_android.sh` build with LTO so those static libraries
+participate in the final `libavif_android.so` link. Re-run both scripts after updating
+them if you previously built without LTO. Pass `-DAVIF_ANDROID_ENABLE_LTO=OFF` via
+Gradle `android.extraCMakeFlags` to disable.
 
 Instrumented tests assume this 8-bit-only dav1d build: 10/12-bit assets are still parsed via
 `getInfo`, but decode APIs are expected to fail for those streams. If you rebuild dav1d with full
@@ -65,6 +75,9 @@ $ cd ext
 $ ./libyuv_android.sh "${ANDROID_NDK_HOME}"
 $ cd ..
 ```
+
+`libyuv_android.sh` disables JPEG/MJPEG support (`CMAKE_DISABLE_FIND_PACKAGE_JPEG`)
+since AVIF decode does not use it.
 
 If you do not want to use libyuv, then update
 [CMakeLists.txt](avifandroidjni/src/main/jni/CMakeLists.txt) as follows:
