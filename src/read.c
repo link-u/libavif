@@ -6077,6 +6077,25 @@ static avifResult avifReadCodecConfigProperty(avifImage * image, const avifPrope
     return AVIF_RESULT_OK;
 }
 
+void avifDecoderDropDecodedPlanes(avifDecoder * decoder)
+{
+    if (!decoder) {
+        return;
+    }
+    if (decoder->image) {
+        avifImageFreePlanes(decoder->image, AVIF_PLANES_ALL);
+        if (decoder->image->gainMap && decoder->image->gainMap->image) {
+            avifImageFreePlanes(decoder->image->gainMap->image, AVIF_PLANES_ALL);
+        }
+    }
+    if (decoder->data) {
+        // Destroys codec instances (e.g. unrefs dav1d pictures) and forgets
+        // tile plane pointers into those buffers. Codecs are recreated on the
+        // next avifDecoderNextImage() / avifDecoderNthImage() call.
+        avifDecoderDataResetCodec(decoder->data);
+    }
+}
+
 avifResult avifDecoderReset(avifDecoder * decoder)
 {
     avifDiagnosticsClearError(&decoder->diag);

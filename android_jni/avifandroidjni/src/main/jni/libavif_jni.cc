@@ -5,12 +5,10 @@
 #include <android/bitmap.h>
 #include <android/hardware_buffer.h>
 #include <android/log.h>
-#include <cpu-features.h>
 #include <dlfcn.h>
 #include <jni.h>
 #include <sys/system_properties.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -341,6 +339,15 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
     if (*res != AVIF_RESULT_OK) {
       LOGE("Failed to scale image. Status: %d", *res);
       return nullptr;
+    }
+    // avifImageScale() left the source (dav1d / decoder) buffers intact because
+    // the scaled image was a non-owning view. Drop them now so YUV→RGB only
+    // retains the smaller scaled planes + the RGB destination.
+    avifDecoderDropDecodedPlanes(decoder->decoder);
+    // Cropped/scaling helpers may still hold dangling pointers into the
+    // dropped buffers; only the owned scaled planes on `image` remain valid.
+    if (cropped_image && cropped_image.get() != image) {
+      avifImageFreePlanes(cropped_image.get(), AVIF_PLANES_ALL);
     }
   }
   *res = AVIF_RESULT_OK;
@@ -811,15 +818,10 @@ avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
 }
 
 int getThreadCount(int threads) {
-  if (threads < 0) {
-    return android_getCpuCount();
-  }
-  if (threads == 0) {
-    // Empirically, on Android devices with more than 1 core, decoding with 2
-    // threads is almost always better than using as many threads as CPU cores.
-    return std::min(android_getCpuCount(), 2);
-  }
-  return threads;
+  // RAM-oriented Android build: always decode with a single thread to avoid
+  // dav1d worker / scratch buffers that scale with maxThreads.
+  (void)threads;
+  return 1;
 }
 
 // Checks if there is a pending JNI exception that will be thrown when the

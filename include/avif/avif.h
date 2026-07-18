@@ -1440,6 +1440,14 @@ AVIF_API avifResult avifDecoderNextImage(avifDecoder * decoder);
 AVIF_API avifResult avifDecoderNthImage(avifDecoder * decoder, uint32_t frameIndex);
 AVIF_API avifResult avifDecoderReset(avifDecoder * decoder);
 
+// Releases pixel buffers for the currently decoded image (owned planes and/or
+// codec-backed buffers such as a dav1d picture). Image metadata on
+// decoder->image is preserved. Call after you have copied or scaled pixels into
+// an independently owned avifImage so the full-size decode buffers can be freed
+// before a subsequent YUV→RGB conversion. The next avifDecoderNextImage() /
+// avifDecoderNthImage() call will re-decode as needed.
+AVIF_API void avifDecoderDropDecodedPlanes(avifDecoder * decoder);
+
 // Keyframe information
 // frameIndex - 0-based, matching avifDecoder->imageIndex, bound by avifDecoder->imageCount
 // "nearest" keyframe means the keyframe prior to this frame index (returns frameIndex if it is a keyframe)

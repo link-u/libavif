@@ -44,7 +44,8 @@ public final class AvifHardwareDecoder {
    *     also positive.
    * @param targetHeight Desired output height when scaling; ignored unless {@code targetWidth} is
    *     also positive.
-   * @param threads Number of threads to be used for the AVIF decode.
+   * @param threads Ignored. Decoding always uses a single thread (maxThreads=1)
+   *     to reduce RAM. Kept for API compatibility.
    * @return a HardwareBuffer on success, or null on failure.
    */
   @Nullable
