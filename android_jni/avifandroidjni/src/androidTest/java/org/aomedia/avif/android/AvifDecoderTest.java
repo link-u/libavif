@@ -107,8 +107,9 @@ public class AvifDecoderTest {
   private static final float[] SCALE_FACTORS = {0.5f, 1.3f};
 
   // Matches ext/dav1d_android.sh / LocalDav1d.cmake (-Dbitdepths=8).
+  // imageCountLimit=1 rejects animated / multi-frame AVIFs at parse time.
   private boolean isDecodeSupported() {
-    return image.depth == 8;
+    return image.depth == 8 && !image.isAnimated;
   }
 
   private static final Image[] IMAGES = {

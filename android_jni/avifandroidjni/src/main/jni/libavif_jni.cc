@@ -232,6 +232,11 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
   decoder->decoder->ignoreXMP = AVIF_TRUE;
   decoder->decoder->ignoreExif = AVIF_TRUE;
   decoder->decoder->ignoreICC = AVIF_TRUE;
+  // Still-image only: reject animated / multi-frame AVIFs early to avoid
+  // allocating per-frame timing and decoder state for sequences.
+  decoder->decoder->imageCountLimit = 1;
+  // Start color-only; enable alpha later if the output format needs it.
+  decoder->decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR;
 
   // Turn off libavif's 'clap' (clean aperture) property validation. This allows
   // us to detect and ignore streams that have an invalid 'clap' property
@@ -340,6 +345,23 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
   }
   *res = AVIF_RESULT_OK;
   return image;
+}
+
+// Enables alpha decode (and resets) when the output needs it and the file has alpha.
+avifResult EnsureAlphaContentIfNeeded(AvifDecoderWrapper* const decoder,
+                                      bool need_alpha) {
+  if (!need_alpha || !decoder->decoder->alphaPresent) {
+    return AVIF_RESULT_OK;
+  }
+  if (decoder->decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA) {
+    return AVIF_RESULT_OK;
+  }
+  decoder->decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA;
+  const avifResult res = avifDecoderReset(decoder->decoder);
+  if (res != AVIF_RESULT_OK) {
+    LOGE("Failed to reset decoder for alpha content. Status: %d", res);
+  }
+  return res;
 }
 
 avifResult AvifImageToRGBBufferFromImage(avifImage* image, void* pixels,
@@ -546,6 +568,7 @@ bool ShouldUseGray565Output(avifImage* image, bool allow_gray565) {
   if (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400) {
     return false;
   }
+  // Prefer alphaPresent-equivalent: if alpha was decoded, alphaPlane is set.
   if (image->alphaPlane != nullptr) {
     return false;
   }
@@ -690,6 +713,11 @@ jobject DecodeToHardwareBuffer(JNIEnv* const env, jobject encoded, int length,
   uint32_t dst_height = 0;
   GetTargetDimensions(&decoder, target_width, target_height, &dst_width,
                       &dst_height);
+  // HardwareBuffer ends as gray565 (no alpha) or RGBA (needs alpha when present).
+  if (EnsureAlphaContentIfNeeded(
+          &decoder, decoder.decoder->alphaPresent) != AVIF_RESULT_OK) {
+    return nullptr;
+  }
   if (avifDecoderNextImage(decoder.decoder) != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image for HardwareBuffer output.");
     return nullptr;
@@ -702,6 +730,10 @@ jobject NextFrameToHardwareBuffer(JNIEnv* const env,
                                   AvifDecoderWrapper* const decoder,
                                   int target_width, int target_height,
                                   bool allow_gray565) {
+  if (EnsureAlphaContentIfNeeded(decoder, decoder->decoder->alphaPresent) !=
+      AVIF_RESULT_OK) {
+    return nullptr;
+  }
   const avifResult decode_result = avifDecoderNextImage(decoder->decoder);
   if (decode_result != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", decode_result);
@@ -719,6 +751,10 @@ jobject NthFrameToHardwareBuffer(JNIEnv* const env,
                                  AvifDecoderWrapper* const decoder, uint32_t n,
                                  int target_width, int target_height,
                                  bool allow_gray565) {
+  if (EnsureAlphaContentIfNeeded(decoder, decoder->decoder->alphaPresent) !=
+      AVIF_RESULT_OK) {
+    return nullptr;
+  }
   const avifResult decode_result = avifDecoderNthImage(decoder->decoder, n);
   if (decode_result != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", decode_result);
@@ -734,7 +770,18 @@ jobject NthFrameToHardwareBuffer(JNIEnv* const env,
 
 avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                            jobject bitmap) {
-  avifResult res = avifDecoderNextImage(decoder->decoder);
+  AndroidBitmapInfo bitmap_info;
+  if (AndroidBitmap_getInfo(env, bitmap, &bitmap_info) < 0) {
+    LOGE("AndroidBitmap_getInfo failed.");
+    return AVIF_RESULT_UNKNOWN_ERROR;
+  }
+  const bool need_alpha =
+      (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_8888);
+  avifResult res = EnsureAlphaContentIfNeeded(decoder, need_alpha);
+  if (res != AVIF_RESULT_OK) {
+    return res;
+  }
+  res = avifDecoderNextImage(decoder->decoder);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
@@ -744,7 +791,18 @@ avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
 
 avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                           uint32_t n, jobject bitmap) {
-  avifResult res = avifDecoderNthImage(decoder->decoder, n);
+  AndroidBitmapInfo bitmap_info;
+  if (AndroidBitmap_getInfo(env, bitmap, &bitmap_info) < 0) {
+    LOGE("AndroidBitmap_getInfo failed.");
+    return AVIF_RESULT_UNKNOWN_ERROR;
+  }
+  const bool need_alpha =
+      (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_8888);
+  avifResult res = EnsureAlphaContentIfNeeded(decoder, need_alpha);
+  if (res != AVIF_RESULT_OK) {
+    return res;
+  }
+  res = avifDecoderNthImage(decoder->decoder, n);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
