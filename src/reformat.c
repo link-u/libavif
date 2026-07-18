@@ -36,7 +36,12 @@ avifBool avifGetRGBColorSpaceInfo(const avifRGBImage * rgb, avifRGBColorSpaceInf
         AVIF_CHECK(rgb->depth == 16);
     }
     if (rgb->format == AVIF_RGB_FORMAT_RGB_565) {
+#if defined(AVIF_DECODE_ONLY)
+        // Android slim: true-color RGB565 is unused. YUV400 Gray565 packing lives in JNI.
+        return AVIF_FALSE;
+#else
         AVIF_CHECK(rgb->depth == 8);
+#endif
     }
     // Cast to silence "comparison of unsigned expression is always true" warning.
     AVIF_CHECK((int)rgb->format >= AVIF_RGB_FORMAT_RGB && rgb->format < AVIF_RGB_FORMAT_COUNT);
@@ -622,10 +627,13 @@ static void avifFreeYUVToRGBLookUpTables(float ** unormFloatTableY, float ** uno
     *unormFloatTableY = NULL;
 }
 
+#if !defined(AVIF_DECODE_ONLY)
 #define RGB565(R, G, B) ((uint16_t)(((B) >> 3) | (((G) >> 2) << 5) | (((R) >> 3) << 11)))
+#endif
 
 static void avifStoreRGB8Pixel(avifRGBFormat format, uint8_t R, uint8_t G, uint8_t B, uint8_t * ptrR, uint8_t * ptrG, uint8_t * ptrB)
 {
+#if !defined(AVIF_DECODE_ONLY)
     if (format == AVIF_RGB_FORMAT_RGB_565) {
         // References for RGB565 color conversion:
         // * https://docs.microsoft.com/en-us/windows/win32/directshow/working-with-16-bit-rgb
@@ -633,6 +641,9 @@ static void avifStoreRGB8Pixel(avifRGBFormat format, uint8_t R, uint8_t G, uint8
         *(uint16_t *)ptrR = RGB565(R, G, B);
         return;
     }
+#else
+    (void)format;
+#endif
     *ptrR = R;
     *ptrG = G;
     *ptrB = B;
@@ -1650,7 +1661,8 @@ avifResult avifImageYUVToRGB(const avifImage * image, avifRGBImage * rgb)
 {
 #if defined(AVIF_DECODE_ONLY)
     // Android slim: 8-bit YUV420/YUV400 → 8-bit RGB only (no F16 / 422 / 444 / high bit depth).
-    if (image->depth != 8 || rgb->depth != 8 || rgb->isFloat ||
+    // RGB_565 true-color conversion is unsupported; YUV400 Gray565 packing is JNI-only.
+    if (image->depth != 8 || rgb->depth != 8 || rgb->isFloat || rgb->format == AVIF_RGB_FORMAT_RGB_565 ||
         (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV420 && image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400)) {
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }

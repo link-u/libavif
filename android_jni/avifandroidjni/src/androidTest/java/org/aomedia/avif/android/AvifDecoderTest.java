@@ -139,11 +139,8 @@ public class AvifDecoderTest {
   public static List<Object[]> data() throws IOException {
     ArrayList<Object[]> list = new ArrayList<>();
     for (Image image : IMAGES) {
-      // Test ARGB_8888 for all files.
+      // Bitmap soft path supports ARGB_8888 only. RGB_565 is Gray565 HardwareBuffer only.
       list.add(new Object[] {Config.ARGB_8888, image});
-      // Test ARGB_8888 and RGB_565 for 8-bit display targets (RGBA_F16 unsupported).
-      Config testConfig = Config.RGB_565;
-      list.add(new Object[] {testConfig, image});
     }
     return list;
   }

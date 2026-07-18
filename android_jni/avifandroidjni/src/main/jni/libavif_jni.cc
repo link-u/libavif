@@ -593,9 +593,9 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
     LOGE("AndroidBitmap_getInfo failed.");
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
-  // Ensure that the bitmap format is RGBA_8888 or RGB_565 (8-bit display only).
-  if (bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 &&
-      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGB_565) {
+  // Bitmap soft path: RGBA_8888 only. RGB_565 is reserved for YUV400 Gray565
+  // HardwareBuffer packing (see PackGray565 / allowGray565), not true-color decode.
+  if (bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
     LOGE("Bitmap format (%d) is not supported.", bitmap_info.format);
     return AVIF_RESULT_NOT_IMPLEMENTED;
   }
@@ -606,16 +606,9 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
 
-  avifRGBFormat format = AVIF_RGB_FORMAT_RGBA;
-  int depth = 8;
-  avifBool is_float = AVIF_FALSE;
-  if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
-    format = AVIF_RGB_FORMAT_RGB_565;
-  }
-
   const avifResult res = AvifImageToRGBBuffer(
       decoder, bitmap_pixels, bitmap_info.width, bitmap_info.height,
-      bitmap_info.stride, format, depth, is_float);
+      bitmap_info.stride, AVIF_RGB_FORMAT_RGBA, /*depth=*/8, /*is_float=*/AVIF_FALSE);
   AndroidBitmap_unlockPixels(env, bitmap);
   return res;
 }

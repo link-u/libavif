@@ -960,8 +960,8 @@ typedef enum avifRGBFormat
     //   r4 and r0 are the MSB and LSB of the red component respectively.
     //   g5 and g0 are the MSB and LSB of the green component respectively.
     //   b4 and b0 are the MSB and LSB of the blue component respectively.
-    // This format is only supported for YUV -> RGB conversion and when
-    // avifRGBImage.depth is set to 8.
+    // Upstream: YUV -> RGB only, depth 8. Android decode-only builds reject this
+    // format in avifImageYUVToRGB; monochrome Gray565 packing is JNI-only.
     AVIF_RGB_FORMAT_RGB_565,
     AVIF_RGB_FORMAT_GRAY,
     AVIF_RGB_FORMAT_GRAYA,

@@ -24,12 +24,15 @@ $ git clone https://github.com/AOMediaCodec/libavif.git
 $ cd libavif
 ```
 
-Step 2 - Set the SDK and NDK paths in environment variables. (Recommended Android NDK revision: r25c)
+Step 2 - Set the SDK and NDK paths in environment variables. (Recommended Android NDK revision: r27c / `27.2.12479018`)
 
 ```
 $ export ANDROID_SDK_ROOT="/path/to/android/sdk"
 $ export ANDROID_NDK_HOME="/path/to/android/ndk"
 ```
+
+Use a **host-matching** NDK (Linux NDK on Linux/WSL, Darwin NDK on macOS). The Windows
+NDK toolchain cannot be used from WSL/Linux.
 
 Step 3 - Checkout and build dav1d (or libgav1)
 
@@ -42,6 +45,9 @@ $ cd ..
 `dav1d_android.sh` clones [link-u/dav1d](https://github.com/link-u/dav1d)
 (`avif` branch). If `ext/dav1d` is absent, the Android JNI CMake LOCAL path
 fetches the same repository/branch via `LocalDav1d.cmake`.
+
+The script generates meson cross-files targeting **API 21** for all ABIs (required for
+NDK r27+, which removed API levels below 21). Override with `ANDROID_API` if needed.
 
 The Android dav1d build is configured with `-Dbitdepths=8` (8-bit AV1 only). Re-run the
 script after changing this option so that all ABIs are rebuilt.
@@ -144,6 +150,9 @@ By default, output uses `RGBA_8888`. Pass `allowGray565 = true` to opt in to **G
 If any condition fails, or if `AHardwareBuffer_allocate` fails for `R5G6B5`, the decoder falls
 back to `RGBA_8888`. (`R5G6B5` is a universally supported HardwareBuffer format from API 26; the
 caller's API 29 gate for `wrapHardwareBuffer` is sufficient—there is no API 35 requirement.)
+
+`Bitmap.Config.RGB_565` is **not** supported on the software Bitmap decode path; only Gray565 via
+`HardwareBuffer` (above) uses the `RGB_565` container.
 
 ### Gray565 packing
 

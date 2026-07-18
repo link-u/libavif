@@ -612,7 +612,8 @@ static avifBool getLibYUVConversionFunction(avifPixelFormat yuvFormat,
         { NULL, NULL, NULL, NULL, NULL },                // BGR
         { NULL, NULL, NULL, NULL, NULL },                // BGRA
         { NULL, NULL, NULL, NULL, NULL },                // ABGR
-        { NULL, NULL, NULL, I420ToRGB565Matrix, NULL }, // RGB_565
+        // Android slim: true-color RGB565 unused (YUV400 Gray565 packing is JNI-only).
+        { NULL, NULL, NULL, NULL, NULL }, // RGB_565
     };
 
     // Lookup table for 8-bit YUVA To 8-bit RGB Matrix (4:4:4 or nearest-neighbor filter).
