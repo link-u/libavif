@@ -6001,6 +6001,11 @@ static avifResult avifDecoderCheckGainMapProperties(avifDecoder * decoder, const
 // and in the same 'altr' group as the primary image item. Returns NULL otherwise.
 static avifDecoderItem * avifDecoderDataFindSampleTransformImageItem(avifDecoderData * data)
 {
+#if defined(AVIF_DECODE_ONLY)
+    // Sample Transform / bit-depth extension disabled for Android 8-bit decode-only builds.
+    (void)data;
+    return NULL;
+#else
     for (uint32_t itemIndex = 0; itemIndex < data->meta->items.count; ++itemIndex) {
         avifDecoderItem * item = data->meta->items.item[itemIndex];
         if (!memcmp(item->type, "sato", 4) && item->id != data->meta->primaryItemID && item->size != 0 &&
@@ -6010,6 +6015,7 @@ static avifDecoderItem * avifDecoderDataFindSampleTransformImageItem(avifDecoder
         }
     }
     return NULL;
+#endif
 }
 
 static avifResult avifDecoderGenerateImageTiles(avifDecoder * decoder, avifTileInfo * info, avifDecoderItem * item, avifItemCategory itemCategory)

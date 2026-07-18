@@ -231,6 +231,7 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
   decoder->decoder->maxThreads = threads;
   decoder->decoder->ignoreXMP = AVIF_TRUE;
   decoder->decoder->ignoreExif = AVIF_TRUE;
+  decoder->decoder->ignoreICC = AVIF_TRUE;
 
   // Turn off libavif's 'clap' (clean aperture) property validation. This allows
   // us to detect and ignore streams that have an invalid 'clap' property
@@ -562,10 +563,9 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
     LOGE("AndroidBitmap_getInfo failed.");
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
-  // Ensure that the bitmap format is RGBA_8888, RGB_565 or RGBA_F16.
+  // Ensure that the bitmap format is RGBA_8888 or RGB_565 (8-bit display only).
   if (bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 &&
-      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGB_565 &&
-      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_F16) {
+      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGB_565) {
     LOGE("Bitmap format (%d) is not supported.", bitmap_info.format);
     return AVIF_RESULT_NOT_IMPLEMENTED;
   }
@@ -579,10 +579,7 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
   avifRGBFormat format = AVIF_RGB_FORMAT_RGBA;
   int depth = 8;
   avifBool is_float = AVIF_FALSE;
-  if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_F16) {
-    depth = 16;
-    is_float = AVIF_TRUE;
-  } else if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
+  if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
     format = AVIF_RGB_FORMAT_RGB_565;
   }
 

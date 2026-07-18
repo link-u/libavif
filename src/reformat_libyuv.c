@@ -137,6 +137,12 @@ unsigned int avifLibYUVVersion(void)
 #define I400ToARGBMatrix NULL
 #endif
 
+//--------------------------------------------------------------------------------------------------
+// RGB to YUV (encode path)
+//
+// Android JNI decode-only build: RGB→YUV tables/helpers are unused. Keep stubs so the public
+// API still links, but drop the conversion LUTs and libyuv encode entry points for size.
+#if 0
 // Two-step replacement for the conversions to 8-bit BT.601 YUV which are missing from libyuv.
 static int avifReorderARGBThenConvertToYUV(int (*ReorderARGB)(const uint8_t *, int, uint8_t *, int, int, int),
                                            int (*ConvertToYUV)(const uint8_t *, int, uint8_t *, int, uint8_t *, int, uint8_t *, int, int, int),
@@ -379,6 +385,14 @@ avifResult avifImageRGBToYUVLibYUV8bpc(avifImage * image, const avifRGBImage * r
     // TODO: Use SplitRGBPlane() for AVIF_MATRIX_COEFFICIENTS_IDENTITY if faster than the built-in implementation
     return AVIF_RESULT_NOT_IMPLEMENTED;
 }
+#else
+avifResult avifImageRGBToYUVLibYUV(avifImage * image, const avifRGBImage * rgb)
+{
+    (void)image;
+    (void)rgb;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+#endif // RGB to YUV (encode path disabled)
 
 //--------------------------------------------------------------------------------------------------
 // YUV to RGB
@@ -465,6 +479,7 @@ typedef int (*YUVAToRGBMatrix)(const uint8_t *,
                                int,
                                int,
                                int);
+#if 0 // Android slim: high-bitdepth conversion typedefs unused.
 typedef int (*YUVToRGBMatrixFilterHighBitDepth)(const uint16_t *,
                                                 int,
                                                 const uint16_t *,
@@ -517,6 +532,7 @@ typedef int (*YUVAToRGBMatrixHighBitDepth)(const uint16_t *,
                                            int,
                                            int,
                                            int);
+#endif
 
 // At most one pointer in this struct will be not-NULL.
 typedef struct
@@ -526,10 +542,12 @@ typedef struct
     YUVAToRGBMatrixFilter yuvaToRgbMatrixFilter;
     YUVToRGBMatrix yuvToRgbMatrix;
     YUVAToRGBMatrix yuvaToRgbMatrix;
+#if 0 // Android slim: high-bitdepth function pointers unused.
     YUVToRGBMatrixFilterHighBitDepth yuvToRgbMatrixFilterHighBitDepth;
     YUVAToRGBMatrixFilterHighBitDepth yuvaToRgbMatrixFilterHighBitDepth;
     YUVToRGBMatrixHighBitDepth yuvToRgbMatrixHighBitDepth;
     YUVAToRGBMatrixHighBitDepth yuvaToRgbMatrixHighBitDepth;
+#endif
 } LibyuvConversionFunction;
 
 // Only allow nearest-neighbor filter if explicitly specified or left as default.
@@ -548,65 +566,68 @@ static avifBool getLibYUVConversionFunction(avifPixelFormat yuvFormat,
                                             LibyuvConversionFunction * lcf)
 {
     // Lookup table for 8-bit YUV400 to 8-bit RGB Matrix.
+    // Android slim: RGBA (+ YUV400) only; other RGB layouts unused by JNI.
     static const YUV400ToRGBMatrix lutYuv400ToRgbMatrix[AVIF_RGB_FORMAT_COUNT] = {
         //                // AVIF_RGB_FORMAT_
         NULL,             // RGB
         I400ToARGBMatrix, // RGBA
         NULL,             // ARGB
         NULL,             // BGR
-        I400ToARGBMatrix, // BGRA
+        NULL,             // BGRA
         NULL,             // ABGR
         NULL,             // RGB_565
     };
 
     // Lookup table for 8-bit YUV To 8-bit RGB Matrix (with filter).
+    // Android slim: YUV420 + RGBA only.
     static const YUVToRGBMatrixFilter lutYuvToRgbMatrixFilter[AVIF_RGB_FORMAT_COUNT][AVIF_PIXEL_FORMAT_COUNT] = {
-        // { NONE, YUV444, YUV422, YUV420, YUV400 }                           // AVIF_RGB_FORMAT_
-        { NULL, NULL, I422ToRGB24MatrixFilter, I420ToRGB24MatrixFilter, NULL }, // RGB
-        { NULL, NULL, I422ToARGBMatrixFilter, I420ToARGBMatrixFilter, NULL },   // RGBA
-        { NULL, NULL, NULL, NULL, NULL },                                       // ARGB
-        { NULL, NULL, I422ToRGB24MatrixFilter, I420ToRGB24MatrixFilter, NULL }, // BGR
-        { NULL, NULL, I422ToARGBMatrixFilter, I420ToARGBMatrixFilter, NULL },   // BGRA
-        { NULL, NULL, NULL, NULL, NULL },                                       // ABGR
-        { NULL, NULL, NULL, NULL, NULL },                                       // RGB_565
+        // { NONE, YUV444, YUV422, YUV420, YUV400 }        // AVIF_RGB_FORMAT_
+        { NULL, NULL, NULL, NULL, NULL },                    // RGB
+        { NULL, NULL, NULL, I420ToARGBMatrixFilter, NULL },  // RGBA
+        { NULL, NULL, NULL, NULL, NULL },                    // ARGB
+        { NULL, NULL, NULL, NULL, NULL },                    // BGR
+        { NULL, NULL, NULL, NULL, NULL },                    // BGRA
+        { NULL, NULL, NULL, NULL, NULL },                    // ABGR
+        { NULL, NULL, NULL, NULL, NULL },                    // RGB_565
     };
 
     // Lookup table for 8-bit YUVA To 8-bit RGB Matrix (with filter).
     static const YUVAToRGBMatrixFilter lutYuvaToRgbMatrixFilter[AVIF_RGB_FORMAT_COUNT][AVIF_PIXEL_FORMAT_COUNT] = {
-        // { NONE, YUV444, YUV422, YUV420, YUV400 }                           // AVIF_RGB_FORMAT_
-        { NULL, NULL, NULL, NULL, NULL },                                               // RGB
-        { NULL, NULL, I422AlphaToARGBMatrixFilter, I420AlphaToARGBMatrixFilter, NULL }, // RGBA
-        { NULL, NULL, NULL, NULL, NULL },                                               // ARGB
-        { NULL, NULL, NULL, NULL, NULL },                                               // BGR
-        { NULL, NULL, I422AlphaToARGBMatrixFilter, I420AlphaToARGBMatrixFilter, NULL }, // BGRA
-        { NULL, NULL, NULL, NULL, NULL },                                               // ABGR
-        { NULL, NULL, NULL, NULL, NULL },                                               // RGB_565
+        // { NONE, YUV444, YUV422, YUV420, YUV400 }               // AVIF_RGB_FORMAT_
+        { NULL, NULL, NULL, NULL, NULL },                         // RGB
+        { NULL, NULL, NULL, I420AlphaToARGBMatrixFilter, NULL },  // RGBA
+        { NULL, NULL, NULL, NULL, NULL },                         // ARGB
+        { NULL, NULL, NULL, NULL, NULL },                         // BGR
+        { NULL, NULL, NULL, NULL, NULL },                         // BGRA
+        { NULL, NULL, NULL, NULL, NULL },                         // ABGR
+        { NULL, NULL, NULL, NULL, NULL },                         // RGB_565
     };
 
     // Lookup table for 8-bit YUV To 8-bit RGB Matrix (4:4:4 or nearest-neighbor filter).
     static const YUVToRGBMatrix lutYuvToRgbMatrix[AVIF_RGB_FORMAT_COUNT][AVIF_PIXEL_FORMAT_COUNT] = {
-        // { NONE, YUV444, YUV422, YUV420, YUV400 }                           // AVIF_RGB_FORMAT_
-        { NULL, I444ToRGB24Matrix, NULL, I420ToRGB24Matrix, NULL },           // RGB
-        { NULL, I444ToARGBMatrix, I422ToARGBMatrix, I420ToARGBMatrix, NULL }, // RGBA
-        { NULL, NULL, I422ToRGBAMatrix, I420ToRGBAMatrix, NULL },             // ARGB
-        { NULL, I444ToRGB24Matrix, NULL, I420ToRGB24Matrix, NULL },           // BGR
-        { NULL, I444ToARGBMatrix, I422ToARGBMatrix, I420ToARGBMatrix, NULL }, // BGRA
-        { NULL, NULL, I422ToRGBAMatrix, I420ToRGBAMatrix, NULL },             // ABGR
-        { NULL, NULL, I422ToRGB565Matrix, I420ToRGB565Matrix, NULL },         // RGB_565
+        // { NONE, YUV444, YUV422, YUV420, YUV400 }      // AVIF_RGB_FORMAT_
+        { NULL, NULL, NULL, NULL, NULL },                // RGB
+        { NULL, NULL, NULL, I420ToARGBMatrix, NULL },   // RGBA
+        { NULL, NULL, NULL, NULL, NULL },                // ARGB
+        { NULL, NULL, NULL, NULL, NULL },                // BGR
+        { NULL, NULL, NULL, NULL, NULL },                // BGRA
+        { NULL, NULL, NULL, NULL, NULL },                // ABGR
+        { NULL, NULL, NULL, I420ToRGB565Matrix, NULL }, // RGB_565
     };
 
     // Lookup table for 8-bit YUVA To 8-bit RGB Matrix (4:4:4 or nearest-neighbor filter).
     static const YUVAToRGBMatrix lutYuvaToRgbMatrix[AVIF_RGB_FORMAT_COUNT][AVIF_PIXEL_FORMAT_COUNT] = {
-        // { NONE, YUV444, YUV422, YUV420, YUV400 }                           // AVIF_RGB_FORMAT_
-        { NULL, NULL, NULL, NULL, NULL },                                                    // RGB
-        { NULL, I444AlphaToARGBMatrix, I422AlphaToARGBMatrix, I420AlphaToARGBMatrix, NULL }, // RGBA
-        { NULL, NULL, NULL, NULL, NULL },                                                    // ARGB
-        { NULL, NULL, NULL, NULL, NULL },                                                    // BGR
-        { NULL, I444AlphaToARGBMatrix, I422AlphaToARGBMatrix, I420AlphaToARGBMatrix, NULL }, // BGRA
-        { NULL, NULL, NULL, NULL, NULL },                                                    // ABGR
-        { NULL, NULL, NULL, NULL, NULL },                                                    // RGB_565
+        // { NONE, YUV444, YUV422, YUV420, YUV400 }            // AVIF_RGB_FORMAT_
+        { NULL, NULL, NULL, NULL, NULL },                      // RGB
+        { NULL, NULL, NULL, I420AlphaToARGBMatrix, NULL },     // RGBA
+        { NULL, NULL, NULL, NULL, NULL },                      // ARGB
+        { NULL, NULL, NULL, NULL, NULL },                      // BGR
+        { NULL, NULL, NULL, NULL, NULL },                      // BGRA
+        { NULL, NULL, NULL, NULL, NULL },                      // ABGR
+        { NULL, NULL, NULL, NULL, NULL },                      // RGB_565
     };
 
+#if 0 // Android slim: 10/12-bit libyuv YUV→RGB paths unused (8-bit decode only).
     // Lookup table for YUV To RGB Matrix (with filter).  First dimension is for the YUV bit depth.
     static const YUVToRGBMatrixFilterHighBitDepth lutYuvToRgbMatrixFilterHighBitDepth[2][AVIF_RGB_FORMAT_COUNT][AVIF_PIXEL_FORMAT_COUNT] = {
         // 10bpc
@@ -710,9 +731,11 @@ static avifBool getLibYUVConversionFunction(avifPixelFormat yuvFormat,
             { NULL, NULL, NULL, NULL, NULL }, // RGB_565
         },
     };
+#endif // 10/12-bit YUV→RGB LUTs
 
     memset(lcf, 0, sizeof(*lcf));
     assert(rgb->depth == 8);
+#if 0 // Android slim: high-bitdepth libyuv selection unused.
     if (yuvDepth > 8) {
         assert(yuvDepth == 10 || yuvDepth == 12);
         int depthIndex = (yuvDepth == 10) ? 0 : 1;
@@ -742,6 +765,10 @@ static avifBool getLibYUVConversionFunction(avifPixelFormat yuvFormat,
         }
         // Fallthrough is intentional. No high bitdepth libyuv function was found. Check if there is an 8-bit libyuv function which
         // can used with a downshift.
+    }
+#endif
+    if (yuvDepth != 8) {
+        return AVIF_FALSE;
     }
     if (yuvFormat == AVIF_PIXEL_FORMAT_YUV400) {
         lcf->yuv400ToRgbMatrix = lutYuv400ToRgbMatrix[rgb->format];
@@ -903,6 +930,7 @@ static void getLibYUVConstants(const avifImage * image, const struct YuvConstant
     }
 }
 
+#if 0 // Android slim: 10/12-bit downshift unused (8-bit decode only).
 static avifResult avifImageDownshiftTo8bpc(const avifImage * image, avifImage * image8, avifBool downshiftAlpha)
 {
     avifImageSetDefaults(image8);
@@ -928,6 +956,7 @@ static avifResult avifImageDownshiftTo8bpc(const avifImage * image, avifImage * 
     }
     return AVIF_RESULT_OK;
 }
+#endif
 
 IGNORE_CFI_ICALL avifResult avifImageYUVToRGBLibYUV(const avifImage * image, avifRGBImage * rgb, avifBool reformatAlpha, avifBool * alphaReformattedWithLibYUV)
 {
@@ -936,7 +965,7 @@ IGNORE_CFI_ICALL avifResult avifImageYUVToRGBLibYUV(const avifImage * image, avi
     if (image->width > INT_MAX || image->height > INT_MAX || image->yuvRowBytes[AVIF_CHAN_Y] > INT_MAX || rgb->rowBytes > INT_MAX) {
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
-    if (rgb->depth != 8 || (image->depth != 8 && image->depth != 10 && image->depth != 12)) {
+    if (rgb->depth != 8 || image->depth != 8) {
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
     // Find the correct libyuv YuvConstants, based on range and CP/MC
@@ -966,143 +995,73 @@ IGNORE_CFI_ICALL avifResult avifImageYUVToRGBLibYUV(const avifImage * image, avi
         ((rgb->chromaUpsampling == AVIF_CHROMA_UPSAMPLING_FASTEST) || (rgb->chromaUpsampling == AVIF_CHROMA_UPSAMPLING_NEAREST))
             ? kFilterNone
             : kFilterBilinear;
-    if (lcf.yuvToRgbMatrixFilterHighBitDepth != NULL) {
-        libyuvResult = lcf.yuvToRgbMatrixFilterHighBitDepth((const uint16_t *)image->yuvPlanes[AVIF_CHAN_Y],
-                                                            image->yuvRowBytes[AVIF_CHAN_Y] / 2,
-                                                            (const uint16_t *)image->yuvPlanes[uPlaneIndex],
-                                                            image->yuvRowBytes[uPlaneIndex] / 2,
-                                                            (const uint16_t *)image->yuvPlanes[vPlaneIndex],
-                                                            image->yuvRowBytes[vPlaneIndex] / 2,
-                                                            rgb->pixels,
-                                                            rgb->rowBytes,
-                                                            matrix,
-                                                            image->width,
-                                                            image->height,
-                                                            filter);
-    } else if (lcf.yuvaToRgbMatrixFilterHighBitDepth != NULL) {
-        libyuvResult = lcf.yuvaToRgbMatrixFilterHighBitDepth((const uint16_t *)image->yuvPlanes[AVIF_CHAN_Y],
-                                                             image->yuvRowBytes[AVIF_CHAN_Y] / 2,
-                                                             (const uint16_t *)image->yuvPlanes[uPlaneIndex],
-                                                             image->yuvRowBytes[uPlaneIndex] / 2,
-                                                             (const uint16_t *)image->yuvPlanes[vPlaneIndex],
-                                                             image->yuvRowBytes[vPlaneIndex] / 2,
-                                                             (const uint16_t *)image->alphaPlane,
-                                                             image->alphaRowBytes / 2,
-                                                             rgb->pixels,
-                                                             rgb->rowBytes,
-                                                             matrix,
-                                                             image->width,
-                                                             image->height,
-                                                             /*attenuate=*/0,
-                                                             filter);
-        *alphaReformattedWithLibYUV = AVIF_TRUE;
-    } else if (lcf.yuvToRgbMatrixHighBitDepth != NULL) {
-        libyuvResult = lcf.yuvToRgbMatrixHighBitDepth((const uint16_t *)image->yuvPlanes[AVIF_CHAN_Y],
-                                                      image->yuvRowBytes[AVIF_CHAN_Y] / 2,
-                                                      (const uint16_t *)image->yuvPlanes[uPlaneIndex],
-                                                      image->yuvRowBytes[uPlaneIndex] / 2,
-                                                      (const uint16_t *)image->yuvPlanes[vPlaneIndex],
-                                                      image->yuvRowBytes[vPlaneIndex] / 2,
-                                                      rgb->pixels,
-                                                      rgb->rowBytes,
-                                                      matrix,
-                                                      image->width,
-                                                      image->height);
-    } else if (lcf.yuvaToRgbMatrixHighBitDepth != NULL) {
-        libyuvResult = lcf.yuvaToRgbMatrixHighBitDepth((const uint16_t *)image->yuvPlanes[AVIF_CHAN_Y],
-                                                       image->yuvRowBytes[AVIF_CHAN_Y] / 2,
-                                                       (const uint16_t *)image->yuvPlanes[uPlaneIndex],
-                                                       image->yuvRowBytes[uPlaneIndex] / 2,
-                                                       (const uint16_t *)image->yuvPlanes[vPlaneIndex],
-                                                       image->yuvRowBytes[vPlaneIndex] / 2,
-                                                       (const uint16_t *)image->alphaPlane,
-                                                       image->alphaRowBytes / 2,
-                                                       rgb->pixels,
-                                                       rgb->rowBytes,
-                                                       matrix,
-                                                       image->width,
-                                                       image->height,
-                                                       /*attentuate=*/0);
-        *alphaReformattedWithLibYUV = AVIF_TRUE;
-    } else {
-        avifImage image8;
-        avifBool inputIsHighBitDepth = image->depth > 8;
-        if (inputIsHighBitDepth) {
-            const avifBool downshiftAlpha = (lcf.yuvaToRgbMatrixFilter != NULL || lcf.yuvaToRgbMatrix != NULL);
-            AVIF_CHECKRES(avifImageDownshiftTo8bpc(image, &image8, downshiftAlpha));
-            image = &image8;
-        }
-        if (lcf.yuv400ToRgbMatrix != NULL) {
-            libyuvResult = lcf.yuv400ToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
+    // Android slim: 8-bit YUV420/YUV400 (+ alpha) only; high-bitdepth / downshift paths removed.
+    if (lcf.yuv400ToRgbMatrix != NULL) {
+        libyuvResult = lcf.yuv400ToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
+                                             image->yuvRowBytes[AVIF_CHAN_Y],
+                                             rgb->pixels,
+                                             rgb->rowBytes,
+                                             matrix,
+                                             image->width,
+                                             image->height);
+    } else if (lcf.yuvToRgbMatrixFilter != NULL) {
+        libyuvResult = lcf.yuvToRgbMatrixFilter(image->yuvPlanes[AVIF_CHAN_Y],
+                                                image->yuvRowBytes[AVIF_CHAN_Y],
+                                                image->yuvPlanes[uPlaneIndex],
+                                                image->yuvRowBytes[uPlaneIndex],
+                                                image->yuvPlanes[vPlaneIndex],
+                                                image->yuvRowBytes[vPlaneIndex],
+                                                rgb->pixels,
+                                                rgb->rowBytes,
+                                                matrix,
+                                                image->width,
+                                                image->height,
+                                                filter);
+    } else if (lcf.yuvaToRgbMatrixFilter != NULL) {
+        libyuvResult = lcf.yuvaToRgbMatrixFilter(image->yuvPlanes[AVIF_CHAN_Y],
                                                  image->yuvRowBytes[AVIF_CHAN_Y],
+                                                 image->yuvPlanes[uPlaneIndex],
+                                                 image->yuvRowBytes[uPlaneIndex],
+                                                 image->yuvPlanes[vPlaneIndex],
+                                                 image->yuvRowBytes[vPlaneIndex],
+                                                 image->alphaPlane,
+                                                 image->alphaRowBytes,
                                                  rgb->pixels,
                                                  rgb->rowBytes,
                                                  matrix,
                                                  image->width,
-                                                 image->height);
-        } else if (lcf.yuvToRgbMatrixFilter != NULL) {
-            libyuvResult = lcf.yuvToRgbMatrixFilter(image->yuvPlanes[AVIF_CHAN_Y],
-                                                    image->yuvRowBytes[AVIF_CHAN_Y],
-                                                    image->yuvPlanes[uPlaneIndex],
-                                                    image->yuvRowBytes[uPlaneIndex],
-                                                    image->yuvPlanes[vPlaneIndex],
-                                                    image->yuvRowBytes[vPlaneIndex],
-                                                    rgb->pixels,
-                                                    rgb->rowBytes,
-                                                    matrix,
-                                                    image->width,
-                                                    image->height,
-                                                    filter);
-        } else if (lcf.yuvaToRgbMatrixFilter != NULL) {
-            libyuvResult = lcf.yuvaToRgbMatrixFilter(image->yuvPlanes[AVIF_CHAN_Y],
-                                                     image->yuvRowBytes[AVIF_CHAN_Y],
-                                                     image->yuvPlanes[uPlaneIndex],
-                                                     image->yuvRowBytes[uPlaneIndex],
-                                                     image->yuvPlanes[vPlaneIndex],
-                                                     image->yuvRowBytes[vPlaneIndex],
-                                                     image->alphaPlane,
-                                                     image->alphaRowBytes,
-                                                     rgb->pixels,
-                                                     rgb->rowBytes,
-                                                     matrix,
-                                                     image->width,
-                                                     image->height,
-                                                     /*attenuate=*/0,
-                                                     filter);
-            *alphaReformattedWithLibYUV = AVIF_TRUE;
-        } else if (lcf.yuvToRgbMatrix != NULL) {
-            libyuvResult = lcf.yuvToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
-                                              image->yuvRowBytes[AVIF_CHAN_Y],
-                                              image->yuvPlanes[uPlaneIndex],
-                                              image->yuvRowBytes[uPlaneIndex],
-                                              image->yuvPlanes[vPlaneIndex],
-                                              image->yuvRowBytes[vPlaneIndex],
-                                              rgb->pixels,
-                                              rgb->rowBytes,
-                                              matrix,
-                                              image->width,
-                                              image->height);
-        } else if (lcf.yuvaToRgbMatrix != NULL) {
-            libyuvResult = lcf.yuvaToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
-                                               image->yuvRowBytes[AVIF_CHAN_Y],
-                                               image->yuvPlanes[uPlaneIndex],
-                                               image->yuvRowBytes[uPlaneIndex],
-                                               image->yuvPlanes[vPlaneIndex],
-                                               image->yuvRowBytes[vPlaneIndex],
-                                               image->alphaPlane,
-                                               image->alphaRowBytes,
-                                               rgb->pixels,
-                                               rgb->rowBytes,
-                                               matrix,
-                                               image->width,
-                                               image->height,
-                                               /*attenuate=*/0);
-            *alphaReformattedWithLibYUV = AVIF_TRUE;
-        }
-        if (inputIsHighBitDepth) {
-            avifImageFreePlanes(&image8, AVIF_PLANES_ALL);
-            image = NULL;
-        }
+                                                 image->height,
+                                                 /*attenuate=*/0,
+                                                 filter);
+        *alphaReformattedWithLibYUV = AVIF_TRUE;
+    } else if (lcf.yuvToRgbMatrix != NULL) {
+        libyuvResult = lcf.yuvToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
+                                          image->yuvRowBytes[AVIF_CHAN_Y],
+                                          image->yuvPlanes[uPlaneIndex],
+                                          image->yuvRowBytes[uPlaneIndex],
+                                          image->yuvPlanes[vPlaneIndex],
+                                          image->yuvRowBytes[vPlaneIndex],
+                                          rgb->pixels,
+                                          rgb->rowBytes,
+                                          matrix,
+                                          image->width,
+                                          image->height);
+    } else if (lcf.yuvaToRgbMatrix != NULL) {
+        libyuvResult = lcf.yuvaToRgbMatrix(image->yuvPlanes[AVIF_CHAN_Y],
+                                           image->yuvRowBytes[AVIF_CHAN_Y],
+                                           image->yuvPlanes[uPlaneIndex],
+                                           image->yuvRowBytes[uPlaneIndex],
+                                           image->yuvPlanes[vPlaneIndex],
+                                           image->yuvRowBytes[vPlaneIndex],
+                                           image->alphaPlane,
+                                           image->alphaRowBytes,
+                                           rgb->pixels,
+                                           rgb->rowBytes,
+                                           matrix,
+                                           image->width,
+                                           image->height,
+                                           /*attenuate=*/0);
+        *alphaReformattedWithLibYUV = AVIF_TRUE;
     }
     return (libyuvResult != 0) ? AVIF_RESULT_REFORMAT_FAILED : AVIF_RESULT_OK;
 }
@@ -1162,20 +1121,9 @@ avifResult avifRGBImageUnpremultiplyAlphaLibYUV(avifRGBImage * rgb)
 
 avifResult avifRGBImageToF16LibYUV(avifRGBImage * rgb)
 {
-    // The width, height, and stride parameters of libyuv functions are all of the int type.
-    if (rgb->width > INT_MAX || rgb->height > INT_MAX || rgb->rowBytes > INT_MAX) {
-        return AVIF_RESULT_NOT_IMPLEMENTED;
-    }
-    const float scale = 1.0f / ((1 << rgb->depth) - 1);
-    // Note: HalfFloatPlane requires the stride to be in bytes.
-    const int result = HalfFloatPlane((const uint16_t *)rgb->pixels,
-                                      rgb->rowBytes,
-                                      (uint16_t *)rgb->pixels,
-                                      rgb->rowBytes,
-                                      scale,
-                                      rgb->width * avifRGBFormatChannelCount(rgb->format),
-                                      rgb->height);
-    return (result == 0) ? AVIF_RESULT_OK : AVIF_RESULT_INVALID_ARGUMENT;
+    // Android slim: 8-bit display only; HalfFloatPlane path removed for binary size.
+    (void)rgb;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
 }
 
 unsigned int avifLibYUVVersion(void)

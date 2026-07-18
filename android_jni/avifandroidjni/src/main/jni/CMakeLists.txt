@@ -29,6 +29,16 @@ set(AVIF_LIBYUV "LOCAL" CACHE STRING "" FORCE)
 # To enable libgav1, change the following two variables to ON.
 set(AVIF_CODEC_LIBGAV1 OFF CACHE BOOL "" FORCE)
 
+# Android JNI is decode-only: drop write.c / encoder implementation.
+set(AVIF_DECODE_ONLY ON CACHE BOOL "" FORCE)
+set(AVIF_CODEC_AOM OFF CACHE STRING "" FORCE)
+set(AVIF_CODEC_RAV1E OFF CACHE STRING "" FORCE)
+set(AVIF_CODEC_SVT OFF CACHE STRING "" FORCE)
+set(AVIF_CODEC_AVM OFF CACHE STRING "" FORCE)
+set(AVIF_LIBSHARPYUV OFF CACHE STRING "" FORCE)
+set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
+set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
 # Enable LTO for non-Debug builds so libavif, libyuv (FetchContent), and the
 # JNI shared library are compiled/linked with IPO. dav1d must also be built
 # with -Db_lto=true (see ext/dav1d_android.sh / LocalDav1d.cmake) for

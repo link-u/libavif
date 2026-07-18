@@ -140,9 +140,8 @@ public class AvifDecoderTest {
     for (Image image : IMAGES) {
       // Test ARGB_8888 for all files.
       list.add(new Object[] {Config.ARGB_8888, image});
-      // For 8bpc files and animated files, test only RGB_565 (F16 is flaky for animated files on
-      // x86 emulators). For other files, test only RGBA_F16.
-      Config testConfig = (image.depth == 8 || image.isAnimated) ? Config.RGB_565 : Config.RGBA_F16;
+      // Test ARGB_8888 and RGB_565 for 8-bit display targets (RGBA_F16 unsupported).
+      Config testConfig = Config.RGB_565;
       list.add(new Object[] {testConfig, image});
     }
     return list;

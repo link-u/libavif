@@ -13,13 +13,12 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-git clone --single-branch https://chromium.googlesource.com/libyuv/libyuv
+git clone -b avif --depth 1 https://github.com/link-u/libyuv.git
 
 cd libyuv
 : # When changing the commit below to a newer version of libyuv, it is best to make sure it is being used by chromium,
 : # because the test suite of chromium provides additional test coverage of libyuv.
 : # It can be looked up at https://source.chromium.org/chromium/chromium/src/+/main:DEPS?q=libyuv.
-git checkout 5d03bf9ba
 
 mkdir build
 cd build

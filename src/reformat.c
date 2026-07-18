@@ -220,6 +220,11 @@ static int avifYUVColorSpaceInfoUVToUNorm(avifYUVColorSpaceInfo * info, float v)
 
 avifResult avifImageRGBToYUV(avifImage * image, const avifRGBImage * rgb)
 {
+#if defined(AVIF_DECODE_ONLY)
+    (void)image;
+    (void)rgb;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+#else
     if (!rgb->pixels || rgb->format == AVIF_RGB_FORMAT_RGB_565) {
         return AVIF_RESULT_REFORMAT_FAILED;
     }
@@ -568,6 +573,7 @@ avifResult avifImageRGBToYUV(avifImage * image, const avifRGBImage * rgb)
         }
     }
     return AVIF_RESULT_OK;
+#endif // !AVIF_DECODE_ONLY
 }
 
 // Allocates and fills look-up tables for going from YUV limited/full unorm -> full range RGB FP32.
@@ -977,6 +983,7 @@ static avifResult avifImageYUVAnyToRGBAnySlow(const avifImage * image,
     return AVIF_RESULT_OK;
 }
 
+#if !defined(AVIF_DECODE_ONLY)
 static avifResult avifImageYUV16ToRGB16Color(const avifImage * image, avifRGBImage * rgb, avifReformatState * state)
 {
     const float kr = state->yuv.kr;
@@ -1307,6 +1314,7 @@ static avifResult avifImageIdentity8ToRGB8ColorFullRange(const avifImage * image
     }
     return AVIF_RESULT_OK;
 }
+#endif // !AVIF_DECODE_ONLY
 
 static avifResult avifImageYUV8ToRGB8Color(const avifImage * image, avifRGBImage * rgb, avifReformatState * state)
 {
@@ -1418,28 +1426,9 @@ typedef union avifF16
 
 static avifResult avifRGBImageToF16(avifRGBImage * rgb)
 {
-    avifResult libyuvResult = AVIF_RESULT_NOT_IMPLEMENTED;
-    if (!rgb->avoidLibYUV) {
-        libyuvResult = avifRGBImageToF16LibYUV(rgb);
-    }
-    if (libyuvResult != AVIF_RESULT_NOT_IMPLEMENTED) {
-        return libyuvResult;
-    }
-    const size_t channelCount = avifRGBFormatChannelCount(rgb->format);
-    const float scale = 1.0f / ((1 << rgb->depth) - 1);
-    const float multiplier = F16_MULTIPLIER * scale;
-    uint16_t * pixelRowBase = (uint16_t *)rgb->pixels;
-    const uint32_t stride = rgb->rowBytes >> 1;
-    for (size_t j = 0; j < rgb->height; ++j) {
-        uint16_t * pixel = pixelRowBase;
-        for (size_t i = 0; i < rgb->width * channelCount; ++i, ++pixel) {
-            avifF16 f16;
-            f16.f = *pixel * multiplier;
-            *pixel = (uint16_t)(f16.u32 >> 13);
-        }
-        pixelRowBase += stride;
-    }
-    return AVIF_RESULT_OK;
+    // Android slim: 8-bit display only; F16 / HalfFloatPlane path removed.
+    (void)rgb;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
 }
 
 static avifResult avifImageYUVToRGBImpl(const avifImage * image, avifRGBImage * rgb, avifReformatState * state, avifAlphaMultiplyMode alphaMultiplyMode)
@@ -1507,13 +1496,23 @@ static avifResult avifImageYUVToRGBImpl(const avifImage * image, avifRGBImage * 
             //   if we can't do alpha (un)multiply as a separated post step (destination format doesn't have alpha).
 
             if (state->yuv.mode == AVIF_REFORMAT_MODE_IDENTITY) {
+#if !defined(AVIF_DECODE_ONLY)
                 if ((image->depth == 8) && (rgb->depth == 8) && (image->yuvFormat == AVIF_PIXEL_FORMAT_YUV444) &&
                     (image->yuvRange == AVIF_RANGE_FULL)) {
                     convertResult = avifImageIdentity8ToRGB8ColorFullRange(image, rgb, state);
                 }
 
                 // TODO: Add more fast paths for identity
+#endif
             } else if (state->yuv.mode == AVIF_REFORMAT_MODE_YUV_COEFFICIENTS) {
+#if defined(AVIF_DECODE_ONLY)
+                // 8-bit YUV → 8-bit RGB only (420/400 enforced by avifImageYUVToRGB).
+                if (hasColor) {
+                    convertResult = avifImageYUV8ToRGB8Color(image, rgb, state);
+                } else {
+                    convertResult = avifImageYUV8ToRGB8Mono(image, rgb, state);
+                }
+#else
                 if (image->depth > 8) {
                     // yuv:u16
 
@@ -1555,6 +1554,7 @@ static avifResult avifImageYUVToRGBImpl(const avifImage * image, avifRGBImage * 
                         }
                     }
                 }
+#endif
             }
         }
 
@@ -1648,6 +1648,13 @@ static avifBool avifJoinYUVToRGBThread(YUVToRGBThreadData * tdata)
 
 avifResult avifImageYUVToRGB(const avifImage * image, avifRGBImage * rgb)
 {
+#if defined(AVIF_DECODE_ONLY)
+    // Android slim: 8-bit YUV420/YUV400 → 8-bit RGB only (no F16 / 422 / 444 / high bit depth).
+    if (image->depth != 8 || rgb->depth != 8 || rgb->isFloat ||
+        (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV420 && image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400)) {
+        return AVIF_RESULT_NOT_IMPLEMENTED;
+    }
+#endif
     // It is okay for rgb->maxThreads to be equal to zero in order to allow clients to zero initialize the avifRGBImage struct
     // with memset.
     if (!image->yuvPlanes[AVIF_CHAN_Y] || rgb->maxThreads < 0) {
