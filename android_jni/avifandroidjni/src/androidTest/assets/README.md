@@ -9,8 +9,9 @@ Test files for still AVIF decoding.
 
 ### blue-and-magenta-crop.avif
 
-Test file with cropping. The image has an encoded size of 320x280. If the Clean
-Aperture box is honored, the size of the displayed image will be 180x100.
+Test file that includes a Clean Aperture (`clap`) box. Encoded size is 320x280
+(the JNI decoder ignores `clap` and always uses the encoded dimensions; clap
+would otherwise display as 180x100).
 [Source](https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/web_tests/images/resources/avif/blue-and-magenta-crop.avif;l=1;drc=3a13337543c1e7de6914f87cd6f02ab06751c572).
 
 ## Sub-Directory: animated_avif

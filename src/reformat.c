@@ -1588,11 +1588,13 @@ static avifResult avifImageYUVToRGBImpl(const avifImage * image, avifRGBImage * 
         if (result != AVIF_RESULT_OK) {
             return result;
         }
+#if !defined(AVIF_DECODE_ONLY)
     } else if (alphaMultiplyMode == AVIF_ALPHA_MULTIPLY_MODE_UNMULTIPLY) {
         avifResult result = avifRGBImageUnpremultiplyAlpha(rgb);
         if (result != AVIF_RESULT_OK) {
             return result;
         }
+#endif
     }
 
     // Convert pixels to half floats (F16), if necessary.
@@ -1689,8 +1691,10 @@ avifResult avifImageYUVToRGB(const avifImage * image, avifRGBImage * rgb)
         } else {
             if (!image->alphaPremultiplied && rgb->alphaPremultiplied) {
                 alphaMultiplyMode = AVIF_ALPHA_MULTIPLY_MODE_MULTIPLY;
+#if !defined(AVIF_DECODE_ONLY)
             } else if (image->alphaPremultiplied && !rgb->alphaPremultiplied) {
                 alphaMultiplyMode = AVIF_ALPHA_MULTIPLY_MODE_UNMULTIPLY;
+#endif
             }
         }
     }

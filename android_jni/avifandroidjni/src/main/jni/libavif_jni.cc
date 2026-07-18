@@ -184,7 +184,6 @@ struct AvifDecoderWrapper {
   }
 
   avifDecoder* decoder = nullptr;
-  avifCropRect crop;
 };
 
 // Returns true when `encoded` is a direct ByteBuffer of at least `length`
@@ -236,9 +235,8 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
   // Start color-only; enable alpha later if the output format needs it.
   decoder->decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR;
 
-  // Turn off libavif's 'clap' (clean aperture) property validation. This allows
-  // us to detect and ignore streams that have an invalid 'clap' property
-  // instead failing.
+  // Ignore invalid 'clap' (clean aperture); we never apply crop and always use
+  // the encoded image dimensions.
   decoder->decoder->strictFlags &= ~AVIF_STRICT_CLAP_VALID;
   // Allow 'pixi' (pixel information) property to be missing. Older versions of
   // libheif did not add the 'pixi' item property to AV1 image items (See
@@ -255,24 +253,6 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
     LOGE("Failed to parse AVIF image: %s.", avifResultToString(res));
     return false;
   }
-
-  avifDiagnostics diag;
-  // If the image does not have a valid 'clap' property, then we simply display
-  // the whole image.
-  // TODO(vigneshv): Handle the case of avifCropRectRequiresUpsampling()
-  //                 returning true.
-  if (!(decoder->decoder->image->transformFlags & AVIF_TRANSFORM_CLAP) ||
-      !avifCropRectFromCleanApertureBox(
-          &decoder->crop, &decoder->decoder->image->clap,
-          decoder->decoder->image->width, decoder->decoder->image->height,
-          &diag) ||
-      avifCropRectRequiresUpsampling(&decoder->crop,
-                                     decoder->decoder->image->yuvFormat)) {
-    decoder->crop.width = decoder->decoder->image->width;
-    decoder->crop.height = decoder->decoder->image->height;
-    decoder->crop.x = 0;
-    decoder->crop.y = 0;
-  }
   return true;
 }
 
@@ -283,8 +263,8 @@ void GetTargetDimensions(AvifDecoderWrapper* const decoder, int target_width,
     *dst_width = static_cast<uint32_t>(target_width);
     *dst_height = static_cast<uint32_t>(target_height);
   } else {
-    *dst_width = decoder->crop.width;
-    *dst_height = decoder->crop.height;
+    *dst_width = decoder->decoder->image->width;
+    *dst_height = decoder->decoder->image->height;
   }
 }
 
@@ -292,48 +272,25 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
                                  uint32_t dst_width, uint32_t dst_height,
                                  avifResult* res,
                                  std::unique_ptr<avifImage, decltype(&avifImageDestroy)>&
-                                     cropped_image,
-                                 std::unique_ptr<avifImage, decltype(&avifImageDestroy)>&
                                      scaling_image) {
-  avifImage* image;
-  if (decoder->decoder->image->width == decoder->crop.width &&
-      decoder->decoder->image->height == decoder->crop.height &&
-      decoder->crop.x == 0 && decoder->crop.y == 0) {
-    image = decoder->decoder->image;
-  } else {
-    cropped_image.reset(avifImageCreateEmpty());
-    if (cropped_image == nullptr) {
-      LOGE("Failed to allocate cropped image.");
+  avifImage* image = decoder->decoder->image;
+  if (image->width != dst_width || image->height != dst_height) {
+    // Scale a non-owning full-image view so that the decoder image remains
+    // unchanged. avifImageScale() can read non-owning source planes directly
+    // and allocates only the destination planes.
+    scaling_image.reset(avifImageCreateEmpty());
+    if (scaling_image == nullptr) {
+      LOGE("Failed to allocate image view for scaling.");
       *res = AVIF_RESULT_OUT_OF_MEMORY;
       return nullptr;
     }
-    *res = avifImageSetViewRect(cropped_image.get(), decoder->decoder->image,
-                                &decoder->crop);
+    const avifCropRect full_image = {0, 0, image->width, image->height};
+    *res = avifImageSetViewRect(scaling_image.get(), image, &full_image);
     if (*res != AVIF_RESULT_OK) {
-      LOGE("Failed to set crop rectangle. Status: %d", *res);
+      LOGE("Failed to create image view for scaling. Status: %d", *res);
       return nullptr;
     }
-    image = cropped_image.get();
-  }
-  if (image->width != dst_width || image->height != dst_height) {
-    if (image == decoder->decoder->image) {
-      // Scale a non-owning full-image view so that the decoder image remains
-      // unchanged. avifImageScale() can read non-owning source planes directly
-      // and allocates only the destination planes.
-      scaling_image.reset(avifImageCreateEmpty());
-      if (scaling_image == nullptr) {
-        LOGE("Failed to allocate image view for scaling.");
-        *res = AVIF_RESULT_OUT_OF_MEMORY;
-        return nullptr;
-      }
-      const avifCropRect full_image = {0, 0, image->width, image->height};
-      *res = avifImageSetViewRect(scaling_image.get(), image, &full_image);
-      if (*res != AVIF_RESULT_OK) {
-        LOGE("Failed to create image view for scaling. Status: %d", *res);
-        return nullptr;
-      }
-      image = scaling_image.get();
-    }
+    image = scaling_image.get();
     avifDiagnostics diag;
     *res = avifImageScale(image, dst_width, dst_height, &diag);
     if (*res != AVIF_RESULT_OK) {
@@ -344,11 +301,6 @@ avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
     // the scaled image was a non-owning view. Drop them now so YUV→RGB only
     // retains the smaller scaled planes + the RGB destination.
     avifDecoderDropDecodedPlanes(decoder->decoder);
-    // Cropped/scaling helpers may still hold dangling pointers into the
-    // dropped buffers; only the owned scaled planes on `image` remain valid.
-    if (cropped_image && cropped_image.get() != image) {
-      avifImageFreePlanes(cropped_image.get(), AVIF_PLANES_ALL);
-    }
   }
   *res = AVIF_RESULT_OK;
   return image;
@@ -395,12 +347,10 @@ avifResult AvifImageToRGBBuffer(AvifDecoderWrapper* const decoder, void* pixels,
                                 size_t row_bytes, avifRGBFormat format,
                                 int depth, avifBool is_float) {
   avifResult res;
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> cropped_image(
-      nullptr, avifImageDestroy);
   std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
       nullptr, avifImageDestroy);
   avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
-                                           cropped_image, scaling_image);
+                                           scaling_image);
   if (image == nullptr) {
     return res;
   }
@@ -625,12 +575,10 @@ jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
   }
 
   avifResult res;
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> cropped_image(
-      nullptr, avifImageDestroy);
   std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
       nullptr, avifImageDestroy);
   avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
-                                           cropped_image, scaling_image);
+                                           scaling_image);
   if (image == nullptr) {
     return nullptr;
   }
@@ -882,9 +830,9 @@ FUNC(jboolean, getInfo, jobject encoded, int length, jobject info) {
   GET_FIELD_ID(height, info_class, "height", "I", false);
   GET_FIELD_ID(depth, info_class, "depth", "I", false);
   GET_FIELD_ID(alpha_present, info_class, "alphaPresent", "Z", false);
-  env->SetIntField(info, width, decoder.crop.width);
+  env->SetIntField(info, width, decoder.decoder->image->width);
   CHECK_EXCEPTION(false);
-  env->SetIntField(info, height, decoder.crop.height);
+  env->SetIntField(info, height, decoder.decoder->image->height);
   CHECK_EXCEPTION(false);
   env->SetIntField(info, depth, decoder.decoder->image->depth);
   CHECK_EXCEPTION(false);
@@ -934,9 +882,9 @@ FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
                0);
   GET_FIELD_ID(frame_durations_id, avif_decoder_class, "frameDurations", "[D",
                0);
-  env->SetIntField(thiz, width_id, decoder->crop.width);
+  env->SetIntField(thiz, width_id, decoder->decoder->image->width);
   CHECK_EXCEPTION(0);
-  env->SetIntField(thiz, height_id, decoder->crop.height);
+  env->SetIntField(thiz, height_id, decoder->decoder->image->height);
   CHECK_EXCEPTION(0);
   env->SetIntField(thiz, depth_id, decoder->decoder->image->depth);
   CHECK_EXCEPTION(0);

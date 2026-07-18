@@ -35,7 +35,7 @@ public final class AvifHardwareDecoder {
    * android.graphics.ColorSpace)}.
    *
    * <p>Scaling applies only when both {@code targetWidth} and {@code targetHeight} are positive.
-   * If either is zero or negative, the cropped image dimensions are used (partial scaling is not
+   * If either is zero or negative, the encoded image dimensions are used (partial scaling is not
    * supported).
    *
    * @param encoded The encoded AVIF image. encoded.position() must be 0.
@@ -91,7 +91,7 @@ public final class AvifHardwareDecoder {
   }
 
   /**
-   * Decodes the AVIF image into an {@link HardwareBuffer} at the cropped image dimensions.
+   * Decodes the AVIF image into an {@link HardwareBuffer} at the encoded image dimensions.
    *
    * @see #decodeToHardwareBuffer(ByteBuffer, int, int, int, int)
    */
@@ -104,7 +104,7 @@ public final class AvifHardwareDecoder {
    * Decodes the next frame of an animated AVIF into an {@link HardwareBuffer}.
    *
    * <p>Scaling applies only when both {@code targetWidth} and {@code targetHeight} are positive.
-   * Otherwise the cropped image dimensions are used.
+   * Otherwise the encoded image dimensions are used.
    *
    * @param decoder A live {@link AvifDecoder} instance created via {@link AvifDecoder#create}. Do
    *     not call {@link AvifDecoder#release()} until this method returns.
@@ -132,7 +132,7 @@ public final class AvifHardwareDecoder {
         decoder.getNativeDecoderHandle(), targetWidth, targetHeight, allowGray565);
   }
 
-  /** Decodes the next frame at the cropped image dimensions. */
+  /** Decodes the next frame at the encoded image dimensions. */
   @Nullable
   public static HardwareBuffer nextFrameHardwareBuffer(AvifDecoder decoder) {
     return nextFrameHardwareBuffer(decoder, 0, 0, false);
@@ -142,7 +142,7 @@ public final class AvifHardwareDecoder {
    * Decodes the nth frame of an animated AVIF into an {@link HardwareBuffer}.
    *
    * <p>Scaling applies only when both {@code targetWidth} and {@code targetHeight} are positive.
-   * Otherwise the cropped image dimensions are used.
+   * Otherwise the encoded image dimensions are used.
    *
    * @param decoder A live {@link AvifDecoder} instance created via {@link AvifDecoder#create}. Do
    *     not call {@link AvifDecoder#release()} until this method returns.
@@ -171,7 +171,7 @@ public final class AvifHardwareDecoder {
         decoder.getNativeDecoderHandle(), n, targetWidth, targetHeight, allowGray565);
   }
 
-  /** Decodes the nth frame at the cropped image dimensions. */
+  /** Decodes the nth frame at the encoded image dimensions. */
   @Nullable
   public static HardwareBuffer nthFrameHardwareBuffer(AvifDecoder decoder, int n) {
     return nthFrameHardwareBuffer(decoder, n, 0, 0, false);

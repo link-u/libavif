@@ -337,6 +337,11 @@ avifResult avifRGBImagePremultiplyAlpha(avifRGBImage * rgb)
 
 avifResult avifRGBImageUnpremultiplyAlpha(avifRGBImage * rgb)
 {
+#if defined(AVIF_DECODE_ONLY)
+    // Android slim: decode always requests premultiplied RGBA; unpremultiply unused.
+    (void)rgb;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+#else
     // no data
     if (!rgb->pixels || !rgb->rowBytes) {
         return AVIF_RESULT_REFORMAT_FAILED;
@@ -532,4 +537,5 @@ avifResult avifRGBImageUnpremultiplyAlpha(avifRGBImage * rgb)
     }
 
     return AVIF_RESULT_OK;
+#endif // !AVIF_DECODE_ONLY
 }
