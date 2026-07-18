@@ -1,0 +1,15 @@
+[binaries]
+c = '@dav1d_android_c@'
+cpp = '@dav1d_android_cpp@'
+ar = '@dav1d_android_ar@'
+strip = '@dav1d_android_strip@'
+pkg-config = 'pkg-config'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'android'
+cpu_family = '@dav1d_android_cpu_family@'
+cpu = '@dav1d_android_cpu@'
+endian = 'little'

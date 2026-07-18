@@ -36,17 +36,46 @@ function(avif_build_local_dav1d)
     if(ANDROID)
         list(APPEND CMAKE_PROGRAM_PATH "${ANDROID_TOOLCHAIN_ROOT}/bin")
 
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7-a")
-            set(android_arch "arm")
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-            set(android_arch "aarch64")
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-            set(android_arch "x86_64")
-        else()
-            set(android_arch "x86")
+        # NDK r27+ dropped API levels below 21. Generate a cross-file with API 21
+        # instead of dav1d's stock package/crossfiles (x86 still used API 19).
+        # Matches android_jni minSdk / ext/dav1d_android.sh.
+        if(NOT DEFINED ANDROID_PLATFORM_LEVEL AND ANDROID_NATIVE_API_LEVEL)
+            set(ANDROID_PLATFORM_LEVEL ${ANDROID_NATIVE_API_LEVEL})
+        endif()
+        if(NOT ANDROID_PLATFORM_LEVEL OR ANDROID_PLATFORM_LEVEL LESS 21)
+            set(ANDROID_PLATFORM_LEVEL 21)
         endif()
 
-        set(CROSS_FILE "${source_dir}/package/crossfiles/${android_arch}-android.meson")
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7-a")
+            set(dav1d_android_cpu_family "arm")
+            set(dav1d_android_cpu "arm")
+            set(dav1d_android_clang_prefix "armv7a-linux-androideabi")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+            set(dav1d_android_cpu_family "aarch64")
+            set(dav1d_android_cpu "aarch64")
+            set(dav1d_android_clang_prefix "aarch64-linux-android")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+            set(dav1d_android_cpu_family "x86_64")
+            set(dav1d_android_cpu "x86_64")
+            set(dav1d_android_clang_prefix "x86_64-linux-android")
+        else()
+            set(dav1d_android_cpu_family "x86")
+            set(dav1d_android_cpu "i686")
+            set(dav1d_android_clang_prefix "i686-linux-android")
+        endif()
+
+        set(dav1d_android_toolchain_bin "${ANDROID_TOOLCHAIN_ROOT}/bin")
+        set(dav1d_android_c
+            "${dav1d_android_toolchain_bin}/${dav1d_android_clang_prefix}${ANDROID_PLATFORM_LEVEL}-clang"
+        )
+        set(dav1d_android_cpp
+            "${dav1d_android_toolchain_bin}/${dav1d_android_clang_prefix}${ANDROID_PLATFORM_LEVEL}-clang++"
+        )
+        set(dav1d_android_ar "${dav1d_android_toolchain_bin}/llvm-ar")
+        set(dav1d_android_strip "${dav1d_android_toolchain_bin}/llvm-strip")
+
+        set(CROSS_FILE "${PROJECT_BINARY_DIR}/crossfile-android-${ANDROID_ABI}.meson")
+        configure_file("${AVIF_SOURCE_DIR}/cmake/Meson/crossfile-android.meson.in" "${CROSS_FILE}" @ONLY)
     elseif(APPLE)
         # If we are cross compiling generate the corresponding file to use with meson
         if(NOT CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
