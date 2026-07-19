@@ -401,6 +401,10 @@ struct Gray565LutTable {
   uint16_t data[256];
 };
 
+struct LimitedToFullLutTable {
+  uint8_t data[256];
+};
+
 constexpr Gray565LutTable MakeGray565LutFull() {
   Gray565LutTable table = {};
   for (int v = 0; v < 256; ++v) {
@@ -417,8 +421,17 @@ constexpr Gray565LutTable MakeGray565LutLimited() {
   return table;
 }
 
+constexpr LimitedToFullLutTable MakeLimitedToFullLut() {
+  LimitedToFullLutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = LimitedToFull8(v);
+  }
+  return table;
+}
+
 constexpr Gray565LutTable kGray565LutFull = MakeGray565LutFull();
 constexpr Gray565LutTable kGray565LutLimited = MakeGray565LutLimited();
+constexpr LimitedToFullLutTable kLimitedToFullLut = MakeLimitedToFullLut();
 
 const uint16_t* Gray565Lut(avifRange range) {
   return range == AVIF_RANGE_LIMITED ? kGray565LutLimited.data
@@ -427,53 +440,140 @@ const uint16_t* Gray565Lut(avifRange range) {
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 // Pack 8 full-range Y samples: R5=Y[1:0], G6=Y[7:2], B5=0.
-static uint16x8_t PackGray565Neon(uint16x8_t y) {
-  const uint16x8_t lo = vandq_u16(y, vdupq_n_u16(3));
-  const uint16x8_t hi = vshrq_n_u16(y, 2);
-  return vorrq_u16(vshlq_n_u16(lo, 11), vshlq_n_u16(hi, 5));
+static inline uint16x8_t PackGray565Neon(uint16x8_t y) {
+  const uint16x8_t g = vshlq_n_u16(vshrq_n_u16(y, 2), 5);
+  return vsliq_n_u16(g, vandq_u16(y, vdupq_n_u16(3)), 11);
 }
 
+static inline void PackGray565Store16(uint8x16_t y8, uint16_t* dst) {
+#if defined(__aarch64__)
+  const uint16x8_t y_lo = vmovl_u8(vget_low_u8(y8));
+  const uint16x8_t y_hi = vmovl_high_u8(y8);
+#else
+  const uint16x8_t y_lo = vmovl_u8(vget_low_u8(y8));
+  const uint16x8_t y_hi = vmovl_u8(vget_high_u8(y8));
+#endif
+  vst1q_u16(dst, PackGray565Neon(y_lo));
+  vst1q_u16(dst + 8, PackGray565Neon(y_hi));
+}
+
+#if defined(__aarch64__)
+// 256-byte LUT lookup via four 64-byte TBL windows (out-of-range lanes → 0).
+static inline uint8x16_t Tbl256(uint8x16_t idx, const uint8x16x4_t& t0,
+                               const uint8x16x4_t& t1, const uint8x16x4_t& t2,
+                               const uint8x16x4_t& t3) {
+  const uint8x16_t r0 = vqtbl4q_u8(t0, idx);
+  const uint8x16_t r1 = vqtbl4q_u8(t1, vsubq_u8(idx, vdupq_n_u8(64)));
+  const uint8x16_t r2 = vqtbl4q_u8(t2, vsubq_u8(idx, vdupq_n_u8(128)));
+  const uint8x16_t r3 = vqtbl4q_u8(t3, vsubq_u8(idx, vdupq_n_u8(192)));
+  return vorrq_u8(vorrq_u8(r0, r1), vorrq_u8(r2, r3));
+}
+
+static void PackGray565RowNeonLimited(const uint8_t* src, uint16_t* dst,
+                                      uint32_t width) {
+  const uint8_t* expand = kLimitedToFullLut.data;
+  const uint8x16x4_t t0 = vld1q_u8_x4(expand + 0);
+  const uint8x16x4_t t1 = vld1q_u8_x4(expand + 64);
+  const uint8x16x4_t t2 = vld1q_u8_x4(expand + 128);
+  const uint8x16x4_t t3 = vld1q_u8_x4(expand + 192);
+
+  uint32_t x = 0;
+  for (; x + 32 <= width; x += 32) {
+    __builtin_prefetch(src + x + 64);
+    const uint8x16_t y0 = Tbl256(vld1q_u8(src + x), t0, t1, t2, t3);
+    const uint8x16_t y1 = Tbl256(vld1q_u8(src + x + 16), t0, t1, t2, t3);
+    PackGray565Store16(y0, dst + x);
+    PackGray565Store16(y1, dst + x + 16);
+  }
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(Tbl256(vld1q_u8(src + x), t0, t1, t2, t3), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    const uint8x8_t y8 = vget_low_u8(Tbl256(vcombine_u8(vld1_u8(src + x),
+                                                        vdup_n_u8(0)),
+                                            t0, t1, t2, t3));
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(y8)));
+  }
+  const uint16_t* lut = kGray565LutLimited.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+
+static void PackGray565RowNeonFull(const uint8_t* src, uint16_t* dst,
+                                   uint32_t width) {
+  uint32_t x = 0;
+  for (; x + 32 <= width; x += 32) {
+    __builtin_prefetch(src + x + 64);
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+    PackGray565Store16(vld1q_u8(src + x + 16), dst + x + 16);
+  }
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutFull.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+#else   // !__aarch64__ (ARMv7 NEON)
 // Limited [16,235] → full [0,255]: e = ((y-16)*255+109)/219, with y clamped.
 // Uses (n * 1197) >> 18, exact for all 8-bit inputs after clamp.
 static uint16x8_t LimitedToFull8Neon(uint8x8_t y8) {
   y8 = vmax_u8(y8, vdup_n_u8(16));
   y8 = vmin_u8(y8, vdup_n_u8(235));
   const uint16x8_t t = vsubq_u16(vmovl_u8(y8), vdupq_n_u16(16));
-  // n = t * 255 + 109 fits in uint16 (max 55984).
   const uint16x8_t n = vmlaq_n_u16(vdupq_n_u16(109), t, 255);
-  const uint32x4_t e_lo = vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_low_u16(n)), 1197), 18);
+  const uint32x4_t e_lo =
+      vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_low_u16(n)), 1197), 18);
   const uint32x4_t e_hi =
       vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_high_u16(n)), 1197), 18);
   return vcombine_u16(vmovn_u32(e_lo), vmovn_u32(e_hi));
 }
 
-static void PackGray565RowNeon(const uint8_t* src, uint16_t* dst, uint32_t width,
-                               avifRange range) {
-  const bool limited = range == AVIF_RANGE_LIMITED;
+static void PackGray565RowNeonLimited(const uint8_t* src, uint16_t* dst,
+                                      uint32_t width) {
   uint32_t x = 0;
-  if (limited) {
-    for (; x + 16 <= width; x += 16) {
-      const uint8x16_t y8 = vld1q_u8(src + x);
-      vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vget_low_u8(y8))));
-      vst1q_u16(dst + x + 8,
-                PackGray565Neon(LimitedToFull8Neon(vget_high_u8(y8))));
-    }
-    for (; x + 8 <= width; x += 8) {
-      vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vld1_u8(src + x))));
-    }
-  } else {
-    for (; x + 16 <= width; x += 16) {
-      const uint8x16_t y8 = vld1q_u8(src + x);
-      vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vget_low_u8(y8))));
-      vst1q_u16(dst + x + 8, PackGray565Neon(vmovl_u8(vget_high_u8(y8))));
-    }
-    for (; x + 8 <= width; x += 8) {
-      vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
-    }
+  for (; x + 16 <= width; x += 16) {
+    const uint8x16_t y8 = vld1q_u8(src + x);
+    vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vget_low_u8(y8))));
+    vst1q_u16(dst + x + 8,
+              PackGray565Neon(LimitedToFull8Neon(vget_high_u8(y8))));
   }
-  const uint16_t* lut = Gray565Lut(range);
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutLimited.data;
   for (; x < width; ++x) {
     dst[x] = lut[src[x]];
+  }
+}
+
+static void PackGray565RowNeonFull(const uint8_t* src, uint16_t* dst,
+                                   uint32_t width) {
+  uint32_t x = 0;
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutFull.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+#endif  // __aarch64__
+
+static void PackGray565RowNeon(const uint8_t* src, uint16_t* dst, uint32_t width,
+                               avifRange range) {
+  if (range == AVIF_RANGE_LIMITED) {
+    PackGray565RowNeonLimited(src, dst, width);
+  } else {
+    PackGray565RowNeonFull(src, dst, width);
   }
 }
 #endif  // __ARM_NEON
@@ -511,6 +611,11 @@ avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
     const uint8_t* src_row = src_y + row * src_row_bytes;
     uint16_t* dst_row =
         reinterpret_cast<uint16_t*>(dst_bytes + row * dst_row_bytes);
+#if defined(__aarch64__)
+    if (row + 1 < height) {
+      __builtin_prefetch(src_y + (row + 1) * src_row_bytes);
+    }
+#endif
     PackGray565Row(src_row, dst_row, width, range);
   }
 
