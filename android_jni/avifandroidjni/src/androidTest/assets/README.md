@@ -32,3 +32,16 @@ file used by the restore ColorMatrix golden test).
 
 Generate with [generate_mono_test_assets.sh](generate_mono_test_assets.sh) (uses
 [gen_mono_ramp.c](gen_mono_ramp.c) against a libavif+aom build, or `avifenc` if available).
+
+### yuv400_full.avif, yuv444_full.avif, yuv444_full_alpha.avif (optional)
+
+8-bit **AV2** (`av02`) Glenwood-matrix samples for dav2d:
+
+* `yuv400_full.avif` — YUV400, full range, **no alpha**
+* `yuv444_full.avif` — YUV444, full range, no alpha
+* `yuv444_full_alpha.avif` — YUV444, full range, with alpha
+
+Do not check in AVM/libaom stand-ins. Generate dav2d-compatible `av02` bitstreams
+(for example from Glenwood, or `avifenc --codec avm` only if that encoder's output
+decodes with dav2d) and place them in this `avif/` directory. Instrumented tests
+skip these files when they are missing.

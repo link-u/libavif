@@ -103,6 +103,7 @@ function(set_codec_option CODEC NAME ENCDEC EXTRA)
 endfunction()
 set_codec_option(AOM "AOM" "encoding/decoding" " (see AVIF_CODEC_AOM_DECODE/AVIF_CODEC_AOM_ENCODE)")
 set_codec_option(DAV1D "dav1d" "decoding" "")
+set_codec_option(DAV2D "dav2d" "decoding" " (AV2)")
 set_codec_option(LIBGAV1 "libgav1" "decoding" "")
 set_codec_option(RAV1E "rav1e" "encoding" "")
 option(AVIF_OPTIMIZE_RAV1E_FOR_SIZE "Overrides rav1e's release setting to optimize for size" OFF)
@@ -481,6 +482,21 @@ if(AVIF_CODEC_DAV1D_ENABLED)
     set(AVIF_PKG_CONFIG_EXTRA_REQUIRES_PRIVATE "${AVIF_PKG_CONFIG_EXTRA_REQUIRES_PRIVATE} dav1d")
 endif()
 
+check_avif_option(AVIF_CODEC_DAV2D TARGET dav2d::dav2d PKG_NAME dav2d)
+if(AVIF_CODEC_DAV2D_ENABLED)
+    target_compile_definitions(avif_obj PRIVATE -DAVIF_CODEC_DAV2D=1)
+    target_sources(avif_obj PRIVATE src/codec_dav2d.c)
+
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(dav2d::dav2d INTERFACE ${CMAKE_DL_LIBS})
+    endif()
+
+    avif_target_link_library(dav2d::dav2d)
+
+    message(STATUS "libavif: Codec enabled: dav2d (decode)")
+    set(AVIF_PKG_CONFIG_EXTRA_REQUIRES_PRIVATE "${AVIF_PKG_CONFIG_EXTRA_REQUIRES_PRIVATE} dav2d")
+endif()
+
 check_avif_option(AVIF_CODEC_LIBGAV1 TARGET libgav1::libgav1 PKG_NAME libgav1)
 if(AVIF_CODEC_LIBGAV1_ENABLED)
     set(AVIF_LIB_USE_CXX ON)
@@ -567,10 +583,16 @@ if(AVIF_CODEC_AVM_ENABLED)
     message(STATUS "libavif: Codec enabled: avm (encode/decode)")
 endif()
 
+if(AVIF_CODEC_DAV2D_ENABLED OR AVIF_CODEC_AVM_ENABLED)
+    target_compile_definitions(avif_obj PUBLIC -DAVIF_ENABLE_AV2=1)
+    message(STATUS "libavif: AV2 container support enabled")
+endif()
+
 if(NOT AVIF_CODEC_AOM_ENABLED
    AND NOT AVIF_CODEC_DAV1D_ENABLED
    AND NOT AVIF_CODEC_LIBGAV1_ENABLED
    AND NOT AVIF_CODEC_AVM_ENABLED
+   AND NOT AVIF_CODEC_DAV2D_ENABLED
 )
     message(WARNING "libavif: No decoding library is enabled.")
 endif()

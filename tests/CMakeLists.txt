@@ -383,6 +383,10 @@ if(AVIF_CODEC_AVM_ENABLED)
     endif()
 endif()
 
+if(AVIF_CODEC_DAV2D_ENABLED AND AVIF_GTEST)
+    add_avif_gtest_with_data(avifdav2dtest)
+endif()
+
 if(AVIF_ENABLE_COVERAGE)
     set(MERGE_COMMAND llvm-profdata merge)
     set(SHOW_COMMAND llvm-cov show --ignore-filename-regex=.*/tests/.* --ignore-filename-regex=.*/third_party/.*)

@@ -1056,7 +1056,8 @@ typedef enum avifCodecChoice
     AVIF_CODEC_CHOICE_LIBGAV1, // Decode only
     AVIF_CODEC_CHOICE_RAV1E,   // Encode only
     AVIF_CODEC_CHOICE_SVT,     // Encode only
-    AVIF_CODEC_CHOICE_AVM      // Experimental (AV2)
+    AVIF_CODEC_CHOICE_AVM,     // Experimental (AV2 encode/decode)
+    AVIF_CODEC_CHOICE_DAV2D    // Decode only (AV2)
 } avifCodecChoice;
 
 typedef enum avifCodecFlag

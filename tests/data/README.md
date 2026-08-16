@@ -1008,3 +1008,15 @@ animated effects.
 License: [Copyright International Color Consortium, 2015](https://www.color.org/profiles2.xalter#license)
 
 Source: https://www.color.org/srgbprofiles.xalter#v2
+
+### Files yuv400_full.avif, yuv444_full.avif, yuv444_full_alpha.avif (optional)
+
+8-bit AV2 (`av02`) Glenwood-matrix samples for `avifdav2dtest` when an AVM encoder
+is not available:
+
+* `yuv400_full.avif` — YUV400, full range, no alpha
+* `yuv444_full.avif` — YUV444, full range, no alpha
+* `yuv444_full_alpha.avif` — YUV444, full range, with alpha
+
+These files are not shipped. Generate dav2d-compatible streams and place them in
+this directory; the test skips them when absent.

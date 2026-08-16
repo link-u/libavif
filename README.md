@@ -101,6 +101,9 @@ whether you want to use a locally built or a system installed version
   and decoder)
 * `AVIF_CODEC_DAV1D` for [dav1d](https://code.videolan.org/videolan/dav1d)
   (decoder)
+* `AVIF_CODEC_DAV2D` for [dav2d](https://code.videolan.org/videolan/dav2d)
+  (AV2 decoder, pinned to 0.0.1 when `LOCAL`). Also enables `AVIF_ENABLE_AV2` so
+  `av02` / `av2C` can be parsed without the experimental AVM codec.
 * `AVIF_CODEC_LIBGAV1` for
   [libgav1](https://chromium.googlesource.com/codecs/libgav1/) (decoder)
 * `AVIF_CODEC_RAV1E` for [rav1e](https://github.com/xiph/rav1e) (encoder)

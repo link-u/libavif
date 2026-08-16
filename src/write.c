@@ -250,8 +250,8 @@ typedef struct avifEncoderData
     avifBool alphaPresent;
     size_t gainMapSizeBytes;
     // Fields specific to AV1/AV2
-    const char * imageItemType;  // "av01" for AV1 ("av02" for AV2 if AVIF_CODEC_AVM)
-    const char * configPropName; // "av1C" for AV1 ("av2C" for AV2 if AVIF_CODEC_AVM)
+    const char * imageItemType;  // "av01" for AV1 ("av02" for AV2 if AVIF_ENABLE_AV2)
+    const char * configPropName; // "av1C" for AV1 ("av2C" for AV2 if AVIF_ENABLE_AV2)
 } avifEncoderData;
 
 static void avifEncoderDataDestroy(avifEncoderData * data);
@@ -1808,7 +1808,7 @@ static avifResult avifEncoderAddImageInternal(avifEncoder * encoder,
             encoder->data->imageItemType = "av01";
             encoder->data->configPropName = "av1C";
             break;
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
         case AVIF_CODEC_TYPE_AV2:
             encoder->data->imageItemType = "av02";
             encoder->data->configPropName = "av2C";
@@ -3236,7 +3236,7 @@ avifResult avifEncoderFinish(avifEncoder * encoder, avifRWData * output)
     }
 
     uint32_t minorVersion = 0;
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
     if (codecType == AVIF_CODEC_TYPE_AV2) {
         // TODO(yguyon): Experimental AV2-AVIF is AVIF version 2 for now (change once it is ratified).
         minorVersion = 2;

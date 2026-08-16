@@ -46,7 +46,7 @@ static avifCodecType avifGetCodecType(const uint8_t * fourcc)
     if (!memcmp(fourcc, "av01", 4)) {
         return AVIF_CODEC_TYPE_AV1;
     }
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
     if (!memcmp(fourcc, "av02", 4)) {
         return AVIF_CODEC_TYPE_AV2;
     }
@@ -60,7 +60,7 @@ static const char * avifGetConfigurationPropertyName(avifCodecType codecType)
     switch (codecType) {
         case AVIF_CODEC_TYPE_AV1:
             return "av1C";
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
         case AVIF_CODEC_TYPE_AV2:
             return "av2C";
 #endif
@@ -2941,7 +2941,7 @@ static avifResult avifParseItemPropertyContainerBox(avifPropertyArray * properti
         } else if (!memcmp(header.type, "av1C", 4)) {
             AVIF_CHECKERR(avifParseCodecConfigurationBoxProperty(prop, avifROStreamCurrent(&s), header.size, "av1C", diag),
                           AVIF_RESULT_BMFF_PARSE_FAILED);
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
         } else if (!memcmp(header.type, "av2C", 4)) {
             AVIF_CHECKERR(avifParseCodecConfigurationBoxProperty(prop, avifROStreamCurrent(&s), header.size, "av2C", diag),
                           AVIF_RESULT_BMFF_PARSE_FAILED);
@@ -4183,7 +4183,7 @@ static avifResult avifParseMinimizedImageBox(avifDecoderData * data,
         for (int i = 0; i < 4; ++i) {
             AVIF_CHECKERR(avifROStreamReadBitsU8(&s, &codecConfigType[i], 8), AVIF_RESULT_BMFF_PARSE_FAILED);
         }
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
         AVIF_CHECKERR((!memcmp(infeType, "av01", 4) && !memcmp(codecConfigType, "av1C", 4)) ||
                           (!memcmp(infeType, "av02", 4) && !memcmp(codecConfigType, "av2C", 4)),
                       AVIF_RESULT_BMFF_PARSE_FAILED);
@@ -5352,10 +5352,14 @@ avifResult avifDecoderParse(avifDecoder * decoder)
 
 static avifResult avifCodecCreateInternal(avifCodecChoice choice, const avifTile * tile, avifDiagnostics * diag, avifCodec ** codec)
 {
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
     // AVIF_CODEC_CHOICE_AUTO leads to AVIF_CODEC_TYPE_AV1 by default. Reroute correctly.
     if (choice == AVIF_CODEC_CHOICE_AUTO && tile->codecType == AVIF_CODEC_TYPE_AV2) {
+#if defined(AVIF_CODEC_DAV2D)
+        choice = AVIF_CODEC_CHOICE_DAV2D;
+#elif defined(AVIF_CODEC_AVM)
         choice = AVIF_CODEC_CHOICE_AVM;
+#endif
     }
 #endif
 

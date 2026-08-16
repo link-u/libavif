@@ -716,7 +716,8 @@ bool Av1EncoderAvailable() {
 bool Av1DecoderAvailable() {
   const char* decoding_codec =
       avifCodecName(AVIF_CODEC_CHOICE_AUTO, AVIF_CODEC_FLAG_CAN_DECODE);
-  return decoding_codec != nullptr && std::string(decoding_codec) != "avm";
+  return decoding_codec != nullptr && std::string(decoding_codec) != "avm" &&
+         std::string(decoding_codec) != "dav2d";
 }
 
 //------------------------------------------------------------------------------

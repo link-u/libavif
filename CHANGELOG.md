@@ -16,6 +16,13 @@ The changes are relative to the previous release, unless the baseline is specifi
 * Android JNI: enable LTO/IPO for Release native builds (dav1d/libyuv Android
   scripts and LocalDav1d on Android also build with LTO)
 * ext/libyuv_android.sh: disable JPEG/MJPEG (`CMAKE_DISABLE_FIND_PACKAGE_JPEG`)
+* `AVIF_CODEC_DAV2D` (VideoLAN dav2d 0.0.1) for AV2 decode. `AVIF_ENABLE_AV2` is
+  set when dav2d or AVM is enabled so `av02` / `av2C` parse without AVM.
+  x86 asm is skipped when NASM is older than 2.16 (`%isidn`).
+* Decode-only 8-bit YUV444 Full → RGBA (libyuv `I444ToARGBMatrix` / JPEG+F709
+  constants, with the C path as fallback). AV1 8-bit YUV420 Limited libyuv
+  Filter and YUV400 Gray565 are unchanged. Android slim libyuv (`avif` branch)
+  must export those I444/Full symbols; rebuild `ext/libyuv` after updating it.
 
 ### Changed since 1.4.2
 * Android JNI: use link-u/dav1d (`avif` branch) instead of videolan dav1d

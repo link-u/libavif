@@ -23,6 +23,9 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # To disable dav1d, change the following two variables to OFF.
 set(AVIF_CODEC_DAV1D "LOCAL" CACHE STRING "" FORCE)
 
+# AV2 decode via dav2d. Keep AVM off (experimental, heavy).
+set(AVIF_CODEC_DAV2D "LOCAL" CACHE STRING "" FORCE)
+
 # To disable libyuv, change this variable to OFF.
 set(AVIF_LIBYUV "LOCAL" CACHE STRING "" FORCE)
 
@@ -40,9 +43,9 @@ set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
 set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 # Enable LTO for non-Debug builds so libavif, libyuv (FetchContent), and the
-# JNI shared library are compiled/linked with IPO. dav1d must also be built
-# with -Db_lto=true (see ext/dav1d_android.sh / LocalDav1d.cmake) for
-# cross-module optimization to include the decoder.
+# JNI shared library are compiled/linked with IPO. dav1d/dav2d must also be
+# built with -Db_lto=true (see ext/dav1d_android.sh, ext/dav2d_android.sh,
+# LocalDav1d.cmake, LocalDav2d.cmake) for cross-module optimization.
 option(AVIF_ANDROID_ENABLE_LTO "Enable LTO/IPO for the Android JNI native build" ON)
 if(AVIF_ANDROID_ENABLE_LTO AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     include(CheckIPOSupported)

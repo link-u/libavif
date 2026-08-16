@@ -14,21 +14,6 @@
 #include <pthread.h>
 #endif
 
-static void * avifMemset16(void * dest, int val, size_t count)
-{
-    uint16_t * dest16 = (uint16_t *)dest;
-    for (size_t i = 0; i < count; i++)
-        *dest16++ = (uint16_t)val;
-    return dest;
-}
-
-struct YUVBlock
-{
-    float y;
-    float u;
-    float v;
-};
-
 avifBool avifGetRGBColorSpaceInfo(const avifRGBImage * rgb, avifRGBColorSpaceInfo * info)
 {
     AVIF_CHECK(rgb->depth == 8 || rgb->depth == 10 || rgb->depth == 12 || rgb->depth == 16);
@@ -198,6 +183,22 @@ static avifBool avifPrepareReformatState(const avifImage * image, const avifRGBI
     return AVIF_TRUE;
 }
 
+#if !defined(AVIF_DECODE_ONLY)
+static void * avifMemset16(void * dest, int val, size_t count)
+{
+    uint16_t * dest16 = (uint16_t *)dest;
+    for (size_t i = 0; i < count; i++)
+        *dest16++ = (uint16_t)val;
+    return dest;
+}
+
+struct YUVBlock
+{
+    float y;
+    float u;
+    float v;
+};
+
 // Formulas 20-31 from https://www.itu.int/rec/T-REC-H.273-201612-S
 static int avifYUVColorSpaceInfoYToUNorm(avifYUVColorSpaceInfo * info, float v)
 {
@@ -222,6 +223,7 @@ static int avifYUVColorSpaceInfoUVToUNorm(avifYUVColorSpaceInfo * info, float v)
 
     return AVIF_CLAMP(unorm, 0, info->maxChannel);
 }
+#endif
 
 avifResult avifImageRGBToYUV(avifImage * image, const avifRGBImage * rgb)
 {
@@ -1517,7 +1519,7 @@ static avifResult avifImageYUVToRGBImpl(const avifImage * image, avifRGBImage * 
 #endif
             } else if (state->yuv.mode == AVIF_REFORMAT_MODE_YUV_COEFFICIENTS) {
 #if defined(AVIF_DECODE_ONLY)
-                // 8-bit YUV → 8-bit RGB only (420/400 enforced by avifImageYUVToRGB).
+                // 8-bit YUV → 8-bit RGB only (400/420/444 enforced by avifImageYUVToRGB).
                 if (hasColor) {
                     convertResult = avifImageYUV8ToRGB8Color(image, rgb, state);
                 } else {
@@ -1662,10 +1664,11 @@ static avifBool avifJoinYUVToRGBThread(YUVToRGBThreadData * tdata)
 avifResult avifImageYUVToRGB(const avifImage * image, avifRGBImage * rgb)
 {
 #if defined(AVIF_DECODE_ONLY)
-    // Android slim: 8-bit YUV420/YUV400 → 8-bit RGB only (no F16 / 422 / 444 / high bit depth).
+    // Android slim: 8-bit YUV400/YUV420/YUV444 → 8-bit RGB (no F16 / 422 / high bit depth).
     // RGB_565 true-color conversion is unsupported; YUV400 Gray565 packing is JNI-only.
     if (image->depth != 8 || rgb->depth != 8 || rgb->isFloat || rgb->format == AVIF_RGB_FORMAT_RGB_565 ||
-        (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV420 && image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400)) {
+        (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV420 && image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400 &&
+         image->yuvFormat != AVIF_PIXEL_FORMAT_YUV444)) {
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
 #endif

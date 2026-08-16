@@ -535,7 +535,7 @@ typedef enum avifCodecType
 {
     AVIF_CODEC_TYPE_UNKNOWN,
     AVIF_CODEC_TYPE_AV1,
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
     AVIF_CODEC_TYPE_AV2, // Experimental.
 #endif
 } avifCodecType;
@@ -629,6 +629,8 @@ AVIF_NODISCARD avifCodec * avifCodecCreateAOM(void);   // requires AVIF_CODEC_AO
 const char * avifCodecVersionAOM(void);                // requires AVIF_CODEC_AOM (codec_aom.c)
 AVIF_NODISCARD avifCodec * avifCodecCreateDav1d(void); // requires AVIF_CODEC_DAV1D (codec_dav1d.c)
 const char * avifCodecVersionDav1d(void);              // requires AVIF_CODEC_DAV1D (codec_dav1d.c)
+AVIF_NODISCARD avifCodec * avifCodecCreateDav2d(void); // requires AVIF_CODEC_DAV2D (codec_dav2d.c)
+const char * avifCodecVersionDav2d(void);              // requires AVIF_CODEC_DAV2D (codec_dav2d.c)
 AVIF_NODISCARD avifCodec * avifCodecCreateGav1(void);  // requires AVIF_CODEC_LIBGAV1 (codec_libgav1.c)
 const char * avifCodecVersionGav1(void);               // requires AVIF_CODEC_LIBGAV1 (codec_libgav1.c)
 AVIF_NODISCARD avifCodec * avifCodecCreateRav1e(void); // requires AVIF_CODEC_RAV1E (codec_rav1e.c)

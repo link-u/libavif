@@ -1180,6 +1180,9 @@ static struct AvailableCodec availableCodecs[] = {
 #if defined(AVIF_CODEC_DAV1D)
     { AVIF_CODEC_CHOICE_DAV1D, AVIF_CODEC_TYPE_AV1, "dav1d", avifCodecVersionDav1d, avifCodecCreateDav1d, AVIF_CODEC_FLAG_CAN_DECODE },
 #endif
+#if defined(AVIF_CODEC_DAV2D)
+    { AVIF_CODEC_CHOICE_DAV2D, AVIF_CODEC_TYPE_AV2, "dav2d", avifCodecVersionDav2d, avifCodecCreateDav2d, AVIF_CODEC_FLAG_CAN_DECODE },
+#endif
 #if defined(AVIF_CODEC_LIBGAV1)
     { AVIF_CODEC_CHOICE_LIBGAV1, AVIF_CODEC_TYPE_AV1, "libgav1", avifCodecVersionGav1, avifCodecCreateGav1, AVIF_CODEC_FLAG_CAN_DECODE },
 #endif
@@ -1223,8 +1226,9 @@ static struct AvailableCodec * findAvailableCodec(avifCodecChoice choice, avifCo
         if (requiredFlags && ((availableCodecs[i].flags & requiredFlags) != requiredFlags)) {
             continue;
         }
-        if ((choice == AVIF_CODEC_CHOICE_AUTO) && (availableCodecs[i].choice == AVIF_CODEC_CHOICE_AVM)) {
-            // AV2 is experimental and cannot be the default, it must be explicitly selected.
+        if ((choice == AVIF_CODEC_CHOICE_AUTO) &&
+            ((availableCodecs[i].choice == AVIF_CODEC_CHOICE_AVM) || (availableCodecs[i].choice == AVIF_CODEC_CHOICE_DAV2D))) {
+            // AV2 is experimental and cannot be the default AV1 decoder; it is selected from av02 tiles.
             continue;
         }
         return &availableCodecs[i];

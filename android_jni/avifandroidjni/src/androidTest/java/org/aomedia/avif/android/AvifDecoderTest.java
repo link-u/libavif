@@ -26,9 +26,9 @@ import org.junit.runners.Parameterized.Parameters;
 /**
  * Instrumentation tests for the libavif JNI API, which will execute on an Android device.
  *
- * <p>The Android dav1d build uses {@code -Dbitdepths=8}, so pixel decoding is exercised only for
- * 8-bit images. 10/12-bit assets are still used to verify header parsing ({@link
- * AvifDecoder#getInfo}) and that decode paths fail cleanly.
+ * <p>The Android dav1d/dav2d builds use {@code -Dbitdepths=8}, so pixel decoding is exercised only
+ * for 8-bit images (YUV400/YUV420/YUV444). 10/12-bit assets and 8-bit YUV422 still verify header
+ * parsing ({@link AvifDecoder#getInfo}) and that decode paths fail cleanly.
  */
 @RunWith(Parameterized.class)
 public class AvifDecoderTest {
@@ -108,8 +108,9 @@ public class AvifDecoderTest {
 
   // Matches ext/dav1d_android.sh / LocalDav1d.cmake (-Dbitdepths=8).
   // imageCountLimit=1 rejects animated / multi-frame AVIFs at parse time.
+  // 8-bit YUV422 still has no DECODE_ONLY RGB path.
   private boolean isDecodeSupported() {
-    return image.depth == 8 && !image.isAnimated;
+    return image.depth == 8 && !image.isAnimated && !image.filename.contains("yuv422");
   }
 
   private static final Image[] IMAGES = {
@@ -365,5 +366,7 @@ public class AvifDecoderTest {
     assertThat(AvifDecoder.versionString()).contains("libyuv");
     // Ensure that the version string contains "dav1d".
     assertThat(AvifDecoder.versionString()).contains("dav1d");
+    // Ensure that the version string contains "dav2d".
+    assertThat(AvifDecoder.versionString()).contains("dav2d");
   }
 }

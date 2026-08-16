@@ -13,7 +13,8 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-git clone -b avif --depth 1 https://github.com/link-u/libyuv.git
+# avif branch: LIBYUV_AVIF_PROFILE (I420 Filter, I444 Matrix, H709/JPEG/F709).
+git clone -b dav2d --depth 1 https://github.com/link-u/libyuv.git
 
 cd libyuv
 : # When changing the commit below to a newer version of libyuv, it is best to make sure it is being used by chromium,

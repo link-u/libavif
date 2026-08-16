@@ -53,14 +53,39 @@ The Android dav1d build is configured with `-Dbitdepths=8` (8-bit AV1 only). Re-
 script after changing this option so that all ABIs are rebuilt.
 
 The Android JNI Release build enables LTO/IPO (`AVIF_ANDROID_ENABLE_LTO`, default ON).
-`dav1d_android.sh` and `libyuv_android.sh` build with LTO so those static libraries
-participate in the final `libavif_android.so` link. Re-run both scripts after updating
-them if you previously built without LTO. Pass `-DAVIF_ANDROID_ENABLE_LTO=OFF` via
-Gradle `android.extraCMakeFlags` to disable.
+`dav1d_android.sh`, `dav2d_android.sh`, and `libyuv_android.sh` build with LTO so those
+static libraries participate in the final `libavif_android.so` link. Re-run the scripts
+after updating them if you previously built without LTO. Pass
+`-DAVIF_ANDROID_ENABLE_LTO=OFF` via Gradle `android.extraCMakeFlags` to disable.
 
-Instrumented tests assume this 8-bit-only dav1d build: 10/12-bit assets are still parsed via
-`getInfo`, but decode APIs are expected to fail for those streams. If you rebuild dav1d with full
-bitdepths (`-Dbitdepths=8,16`), update the tests accordingly.
+Instrumented tests assume this 8-bit-only dav1d/dav2d build: 10/12-bit assets are still
+parsed via `getInfo`, but decode APIs are expected to fail for those streams. If you
+rebuild dav1d/dav2d with full bitdepths (`-Dbitdepths=8,16`), update the tests
+accordingly.
+
+Step 3b - Checkout and build dav2d (AV2 decode)
+
+```
+$ cd ext
+$ ./dav2d_android.sh "${ANDROID_NDK_HOME}"
+$ cd ..
+```
+
+`dav2d_android.sh` clones [VideoLAN dav2d](https://code.videolan.org/videolan/dav2d.git)
+tag **0.0.1**. If `ext/dav2d` is absent, the Android JNI CMake LOCAL path fetches the
+same tag via `LocalDav2d.cmake`.
+
+The Android dav2d build is configured with `-Dbitdepths=8` (8-bit AV2 only) and
+`-Db_lto=true`. AVM (`AVIF_CODEC_AVM`) stays **OFF** in the JNI CMake; dav2d is the
+Android AV2 decoder.
+
+dav2d x86/x86_64 assembly requires **NASM 2.16+** (preprocessor `%isidn()`). Ubuntu
+22.04 / typical WSL `nasm` is 2.15.05 and fails with `symbol '%isidn' not defined`.
+`dav2d_android.sh` then builds those ABIs with `-Denable_asm=false` (C only). ARM
+ABIs still use assembly. To keep x86 asm, install NASM 2.16+ and re-run the script.
+
+If you do not want AV2 decode, set `AVIF_CODEC_DAV2D` to `OFF` in
+[CMakeLists.txt](avifandroidjni/src/main/jni/CMakeLists.txt).
 
 If you want to use libgav1 instead:
 
@@ -82,8 +107,12 @@ $ ./libyuv_android.sh "${ANDROID_NDK_HOME}"
 $ cd ..
 ```
 
-`libyuv_android.sh` disables JPEG/MJPEG support (`CMAKE_DISABLE_FIND_PACKAGE_JPEG`)
-since AVIF decode does not use it.
+`libyuv_android.sh` clones link-u/libyuv (`avif` branch) with `LIBYUV_AVIF_PROFILE`
+(8-bit I420 bilinear Filter, I444 Matrix, H709/JPEG/F709 constants). It disables
+libyuv's MJPEG decoder (`CMAKE_DISABLE_FIND_PACKAGE_JPEG`); that does not remove
+`kYuvJPEGConstants`. Rebuild `ext/libyuv` after pulling a libyuv that exports
+`I444ToARGBMatrix` / `I444AlphaToARGBMatrix` and the JPEG/F709 matrices, or the
+JNI link will miss the AV2 YUV444 Full fast path.
 
 If you do not want to use libyuv, then update
 [CMakeLists.txt](avifandroidjni/src/main/jni/CMakeLists.txt) as follows:
@@ -109,9 +138,10 @@ Step 1 - Build the library
 Make sure to build the library by following the steps under
 [Generate the AAR package](#generate-the-aar-package) section above.
 
-These tests assume the default Android dav1d build (`-Dbitdepths=8`). Decode success
-cases cover 8-bit images only; 10/12-bit assets verify `getInfo` and clean decode
-failure.
+These tests assume the default Android dav1d/dav2d builds (`-Dbitdepths=8`). Decode
+success cases cover 8-bit images only; 10/12-bit assets verify `getInfo` and clean
+decode failure. Optional AV2 fixtures (`yuv400_full.avif`, `yuv444_full.avif`,
+`yuv444_full_alpha.avif`) are skipped when absent.
 
 Step 2 - Set up a device/emulator
 

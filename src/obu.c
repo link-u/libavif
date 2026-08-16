@@ -41,6 +41,13 @@
 
 #if defined(AVIF_CODEC_AVM)
 #include "avm/avm_codec.h"
+#elif defined(AVIF_ENABLE_AV2)
+// dav2d / AVM OBU type ids (see dav2d/headers.h Dav2dObuType).
+enum
+{
+    OBU_SEQUENCE_HEADER = 1,
+    OBU_CONTENT_INTERPRETATION = 24
+};
 #endif
 
 // ---------------------------------------------------------------------------
@@ -127,7 +134,7 @@ static uint32_t avifBitsReadVLC(avifBits * const bits)
     return numBits ? ((1U << numBits) - 1) + avifBitsRead(bits, numBits) : 0;
 }
 
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
 // Rice-Golomb coding with parameter n.
 static uint32_t avifBitsReadRG(avifBits * const bits, const uint32_t n)
 {
@@ -140,7 +147,7 @@ static uint32_t avifBitsReadRG(avifBits * const bits, const uint32_t n)
     }
     return 0xFFFFFFFFU;
 }
-#endif // defined(AVIF_CODEC_AVM)
+#endif // defined(AVIF_ENABLE_AV2)
 
 // ---------------------------------------------------------------------------
 // Variables in here use snake_case to self-document from the AV1 spec and the draft AV2 spec:
@@ -159,7 +166,7 @@ static avifBool parseAV1SequenceHeaderProfile(avifBits * bits, avifSequenceHeade
     return !bits->error;
 }
 
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
 static avifBool parseAV2SequenceHeaderProfile(avifBits * bits, avifSequenceHeader * header)
 {
     uint32_t seq_profile = avifBitsRead(bits, 5);
@@ -169,7 +176,7 @@ static avifBool parseAV2SequenceHeaderProfile(avifBits * bits, avifSequenceHeade
     header->av1C.seqProfile = (uint8_t)seq_profile;
     return !bits->error;
 }
-#endif // defined(AVIF_CODEC_AVM)
+#endif // defined(AVIF_ENABLE_AV2)
 
 static avifBool parseSequenceHeaderLevelIdxAndTier(avifBits * bits, avifSequenceHeader * header)
 {
@@ -375,7 +382,7 @@ static avifBool parseAV1SequenceHeaderColorConfig(avifBits * bits, avifSequenceH
     return !bits->error;
 }
 
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
 enum
 {
     AV2_CHROMA_FORMAT_420 = 0,
@@ -440,7 +447,7 @@ static avifBool parseAV2ChromaFormatBitdepth(avifBits * bits, avifSequenceHeader
 
     return !bits->error;
 }
-#endif // defined(AVIF_CODEC_AVM)
+#endif // defined(AVIF_ENABLE_AV2)
 
 static avifBool parseAV1SequenceHeader(avifBits * bits, avifSequenceHeader * header)
 {
@@ -462,7 +469,7 @@ static avifBool parseAV1SequenceHeader(avifBits * bits, avifSequenceHeader * hea
     return !bits->error;
 }
 
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
 static int avifCeilLog2(int x)
 {
     if (x < 2)
@@ -591,7 +598,7 @@ static avifBool parseAV2ContentInterpretation(avifBits * bits, avifSequenceHeade
     // Other ignored fields.
     return !bits->error;
 }
-#endif // defined(AVIF_CODEC_AVM)
+#endif // defined(AVIF_ENABLE_AV2)
 
 static avifBool av1SequenceHeaderParse(avifSequenceHeader * header, const avifROData * sample)
 {
@@ -644,7 +651,7 @@ static avifBool av1SequenceHeaderParse(avifSequenceHeader * header, const avifRO
     return AVIF_FALSE;
 }
 
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
 static avifBool av2SequenceHeaderParse(avifSequenceHeader * header, const avifROData * sample)
 {
     avifBool sequenceHeaderFound = AVIF_FALSE;
@@ -707,14 +714,14 @@ static avifBool av2SequenceHeaderParse(avifSequenceHeader * header, const avifRO
     }
     return sequenceHeaderFound;
 }
-#endif // defined(AVIF_CODEC_AVM)
+#endif // defined(AVIF_ENABLE_AV2)
 
 avifBool avifSequenceHeaderParse(avifSequenceHeader * header, const avifROData * sample, avifCodecType codecType)
 {
     switch (codecType) {
         case AVIF_CODEC_TYPE_AV1:
             return av1SequenceHeaderParse(header, sample);
-#if defined(AVIF_CODEC_AVM)
+#if defined(AVIF_ENABLE_AV2)
         case AVIF_CODEC_TYPE_AV2:
             return av2SequenceHeaderParse(header, sample);
 #endif
