@@ -154,6 +154,46 @@ caller's API 29 gate for `wrapHardwareBuffer` is sufficient—there is no API 35
 `Bitmap.Config.RGB_565` is **not** supported on the software Bitmap decode path; only Gray565 via
 `HardwareBuffer` (above) uses the `RGB_565` container.
 
+### R8 (GL ES) output
+
+Pass `allowR8 = true` (the trailing parameter of the 7-argument `decodeToHardwareBuffer` and of
+the 5/6-argument `nextFrameHardwareBuffer` / `nthFrameHardwareBuffer` overloads) to opt in to a
+**1 byte/pixel** `HardwareBuffer.R_8` (`0x38`) output. It is selected when **all** of the
+following hold:
+
+* The decoded image is 8-bit monochrome (`YUV400`) with no alpha plane (same as Gray565).
+* `allowR8` is `true`.
+* The device runs API 33+ (`Bitmap.wrapHardwareBuffer` only accepts `R_8` from Android 13).
+* An offscreen OpenGL ES 3.0 context with `EGL_ANDROID_image_native_buffer`,
+  `EGL_ANDROID_get_native_client_buffer` and `GL_OES_EGL_image` can be created.
+
+Why GL ES: CPU writes (`AHardwareBuffer_lock`) into `R8` buffers are gralloc-dependent and fail or
+mis-stride on several low-end devices, which is why Gray565 exists. `R8` is, however, a mandatory
+color-renderable format in GLES 3.0, so the JNI layer allocates the buffer with
+`GPU_COLOR_OUTPUT | GPU_SAMPLED_IMAGE`, imports it as an `EGLImage`, and renders the Y plane into
+it with a trivial fragment shader (`gles_r8_writer.cc`). Limited-range Y (16–235) is expanded to
+0–255 in the shader; full-range Y is copied as-is. The call blocks (`glFinish`) until the GPU has
+finished, so the buffer is safe to wrap immediately.
+
+Format priority is **R8 → Gray565 → RGBA_8888**. Every R8 failure (allocation, EGL/GL setup,
+missing extensions, incomplete framebuffer) is logged and falls through to the next candidate, so
+callers must always dispatch on `HardwareBuffer.getFormat()`.
+
+**Display responsibility:** Skia samples an `R_8` hardware bitmap as red-only. Draw it with a
+`ColorMatrixColorFilter` that copies R into R, G and B:
+
+```java
+new ColorMatrix(new float[] {
+    1, 0, 0, 0, 0,
+    1, 0, 0, 0, 0,
+    1, 0, 0, 0, 0,
+    0, 0, 0, 1, 0});
+```
+
+The shared library now links against `EGL` and `GLESv3` (NDK system libraries). A process-wide
+offscreen EGL context is created lazily on first use and kept alive; concurrent decodes serialize
+on it. The caller's own EGL context (if any) is saved and restored around each write.
+
 ### Gray565 packing
 
 `RGB_565` here is **not** a true color RGB565 image. It is an 8-bit grayscale value packed into
@@ -181,9 +221,12 @@ B to:
 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
   HardwareBuffer buffer =
       AvifHardwareDecoder.decodeToHardwareBuffer(
-          encoded, encoded.remaining(), 0, 0, threads, /* allowGray565= */ true);
+          encoded, encoded.remaining(), 0, 0, threads,
+          /* allowGray565= */ true, /* allowR8= */ true);
   if (buffer != null) {
-    if (buffer.getFormat() == HardwareBuffer.RGB_565) {
+    if (buffer.getFormat() == 0x38 /* HardwareBuffer.R_8, API 33 */) {
+      // Apply the R8 restore ColorMatrix (copy R to R, G, B) before drawing.
+    } else if (buffer.getFormat() == HardwareBuffer.RGB_565) {
       // Apply the Gray565 restore ColorMatrix before drawing.
     }
     buffer.close();

@@ -68,7 +68,9 @@ endif()
 # libavif checkout is to be used, this path has to be updated accordingly.
 add_subdirectory(../../../../.. build)
 
-add_library("avif_android" SHARED "libavif_jni.cc")
+add_library("avif_android" SHARED "libavif_jni.cc" "gles_r8_writer.cc")
 
 target_link_options(avif_android PRIVATE "-Wl,-z,max-page-size=16384")
-target_link_libraries(avif_android jnigraphics avif log)
+# EGL / GLESv3 are NDK system libraries (available since android-18 / android-21)
+# used by gles_r8_writer.cc to write R8 HardwareBuffers through the GPU.
+target_link_libraries(avif_android jnigraphics avif log EGL GLESv3)

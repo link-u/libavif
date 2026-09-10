@@ -86,8 +86,60 @@ public final class AvifHardwareDecoder {
       int targetHeight,
       int threads,
       boolean allowGray565) {
+    return decodeToHardwareBuffer(
+        encoded, length, targetWidth, targetHeight, threads, allowGray565, false);
+  }
+
+  /**
+   * Decodes the AVIF image into an {@link HardwareBuffer}, optionally as a 1 byte/pixel {@code R_8}
+   * buffer written by the GPU.
+   *
+   * <p>Output format selection (first match wins):
+   *
+   * <ol>
+   *   <li>{@code allowR8} and the image is 8-bit monochrome ({@code YUV400}) without alpha and the
+   *       device runs API 33+: {@code HardwareBuffer.R_8} ({@code 0x38}, 1 byte/pixel). The Y plane
+   *       is uploaded through an offscreen OpenGL ES 3.0 context (EGLImage render target), so this
+   *       path does not depend on gralloc supporting CPU writes to R8 buffers. Limited-range Y is
+   *       expanded to full range on the GPU.
+   *   <li>{@code allowGray565} and the image is 8-bit monochrome without alpha: {@link
+   *       HardwareBuffer#RGB_565} Gray565 packing (2 bytes/pixel, CPU written). See {@link
+   *       #decodeToHardwareBuffer(ByteBuffer, int, int, int, int, boolean)}.
+   *   <li>Otherwise {@link HardwareBuffer#RGBA_8888}.
+   * </ol>
+   *
+   * <p>Any R8 failure (allocation, EGL/GL context, missing extensions) silently falls through to the
+   * next candidate, so callers must always check {@link HardwareBuffer#getFormat()}.
+   *
+   * <p><b>R8 display contract:</b> {@link android.graphics.Bitmap#wrapHardwareBuffer} accepts {@code
+   * R_8} only from API 33, and Skia samples it as a red-only image. To show it as grayscale, draw
+   * with a {@link android.graphics.ColorMatrixColorFilter} that copies R into R, G and B:
+   *
+   * <pre>{@code
+   * new ColorMatrix(new float[] {
+   *     1, 0, 0, 0, 0,
+   *     1, 0, 0, 0, 0,
+   *     1, 0, 0, 0, 0,
+   *     0, 0, 0, 1, 0});
+   * }</pre>
+   *
+   * @param allowGray565 When {@code true}, opt in to Gray565 ({@code RGB_565}) packing for eligible
+   *     monochrome images (used when R8 is disabled or unavailable).
+   * @param allowR8 When {@code true}, opt in to GPU-written {@code R_8} output for eligible
+   *     monochrome images on API 33+.
+   * @see #decodeToHardwareBuffer(ByteBuffer, int, int, int, int, boolean)
+   */
+  @Nullable
+  public static HardwareBuffer decodeToHardwareBuffer(
+      ByteBuffer encoded,
+      int length,
+      int targetWidth,
+      int targetHeight,
+      int threads,
+      boolean allowGray565,
+      boolean allowR8) {
     return decodeToHardwareBufferNative(
-        encoded, length, targetWidth, targetHeight, threads, allowGray565);
+        encoded, length, targetWidth, targetHeight, threads, allowGray565, allowR8);
   }
 
   /**
@@ -125,11 +177,28 @@ public final class AvifHardwareDecoder {
   @Nullable
   public static HardwareBuffer nextFrameHardwareBuffer(
       AvifDecoder decoder, int targetWidth, int targetHeight, boolean allowGray565) {
+    return nextFrameHardwareBuffer(decoder, targetWidth, targetHeight, allowGray565, false);
+  }
+
+  /**
+   * Decodes the next frame of an animated AVIF into an {@link HardwareBuffer}.
+   *
+   * @param allowR8 When {@code true}, opt in to GPU-written {@code R_8} output for eligible
+   *     monochrome frames on API 33+. See {@link #decodeToHardwareBuffer(ByteBuffer, int, int, int,
+   *     int, boolean, boolean)} for format selection rules and display responsibilities.
+   */
+  @Nullable
+  public static HardwareBuffer nextFrameHardwareBuffer(
+      AvifDecoder decoder,
+      int targetWidth,
+      int targetHeight,
+      boolean allowGray565,
+      boolean allowR8) {
     if (decoder == null || !decoder.isAlive()) {
       return null;
     }
     return nextFrameHardwareBufferNative(
-        decoder.getNativeDecoderHandle(), targetWidth, targetHeight, allowGray565);
+        decoder.getNativeDecoderHandle(), targetWidth, targetHeight, allowGray565, allowR8);
   }
 
   /** Decodes the next frame at the encoded image dimensions. */
@@ -164,11 +233,29 @@ public final class AvifHardwareDecoder {
   @Nullable
   public static HardwareBuffer nthFrameHardwareBuffer(
       AvifDecoder decoder, int n, int targetWidth, int targetHeight, boolean allowGray565) {
+    return nthFrameHardwareBuffer(decoder, n, targetWidth, targetHeight, allowGray565, false);
+  }
+
+  /**
+   * Decodes the nth frame of an animated AVIF into an {@link HardwareBuffer}.
+   *
+   * @param allowR8 When {@code true}, opt in to GPU-written {@code R_8} output for eligible
+   *     monochrome frames on API 33+. See {@link #decodeToHardwareBuffer(ByteBuffer, int, int, int,
+   *     int, boolean, boolean)} for format selection rules and display responsibilities.
+   */
+  @Nullable
+  public static HardwareBuffer nthFrameHardwareBuffer(
+      AvifDecoder decoder,
+      int n,
+      int targetWidth,
+      int targetHeight,
+      boolean allowGray565,
+      boolean allowR8) {
     if (decoder == null || !decoder.isAlive()) {
       return null;
     }
     return nthFrameHardwareBufferNative(
-        decoder.getNativeDecoderHandle(), n, targetWidth, targetHeight, allowGray565);
+        decoder.getNativeDecoderHandle(), n, targetWidth, targetHeight, allowGray565, allowR8);
   }
 
   /** Decodes the nth frame at the encoded image dimensions. */
@@ -183,11 +270,21 @@ public final class AvifHardwareDecoder {
       int targetWidth,
       int targetHeight,
       int threads,
-      boolean allowGray565);
+      boolean allowGray565,
+      boolean allowR8);
 
   private static native HardwareBuffer nextFrameHardwareBufferNative(
-      long nativeDecoderHandle, int targetWidth, int targetHeight, boolean allowGray565);
+      long nativeDecoderHandle,
+      int targetWidth,
+      int targetHeight,
+      boolean allowGray565,
+      boolean allowR8);
 
   private static native HardwareBuffer nthFrameHardwareBufferNative(
-      long nativeDecoderHandle, int n, int targetWidth, int targetHeight, boolean allowGray565);
+      long nativeDecoderHandle,
+      int n,
+      int targetWidth,
+      int targetHeight,
+      boolean allowGray565,
+      boolean allowR8);
 }
