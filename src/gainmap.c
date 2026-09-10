@@ -7,6 +7,106 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(AVIF_DECODE_ONLY)
+
+// Decode-only: keep metadata parse/validate helpers; stub Apply/Compute (and colrconvert callers).
+
+avifResult avifRGBImageApplyGainMap(const avifRGBImage * baseImage,
+                                    avifColorPrimaries baseColorPrimaries,
+                                    avifTransferCharacteristics baseTransferCharacteristics,
+                                    const avifGainMap * gainMap,
+                                    float hdrHeadroom,
+                                    avifColorPrimaries outputColorPrimaries,
+                                    avifTransferCharacteristics outputTransferCharacteristics,
+                                    avifRGBImage * toneMappedImage,
+                                    avifContentLightLevelInformationBox * clli,
+                                    avifDiagnostics * diag)
+{
+    (void)baseImage;
+    (void)baseColorPrimaries;
+    (void)baseTransferCharacteristics;
+    (void)gainMap;
+    (void)hdrHeadroom;
+    (void)outputColorPrimaries;
+    (void)outputTransferCharacteristics;
+    (void)toneMappedImage;
+    (void)clli;
+    if (diag) {
+        avifDiagnosticsClearError(diag);
+        avifDiagnosticsPrintf(diag, "Gain map apply is disabled in decode-only builds");
+    }
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+
+avifResult avifImageApplyGainMap(const avifImage * baseImage,
+                                 const avifGainMap * gainMap,
+                                 float hdrHeadroom,
+                                 avifColorPrimaries outputColorPrimaries,
+                                 avifTransferCharacteristics outputTransferCharacteristics,
+                                 avifRGBImage * toneMappedImage,
+                                 avifContentLightLevelInformationBox * clli,
+                                 avifDiagnostics * diag)
+{
+    (void)baseImage;
+    (void)gainMap;
+    (void)hdrHeadroom;
+    (void)outputColorPrimaries;
+    (void)outputTransferCharacteristics;
+    (void)toneMappedImage;
+    (void)clli;
+    if (diag) {
+        avifDiagnosticsClearError(diag);
+        avifDiagnosticsPrintf(diag, "Gain map apply is disabled in decode-only builds");
+    }
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+
+avifResult avifFindMinMaxWithoutOutliers(const float * gainMapF, size_t numPixels, float * rangeMin, float * rangeMax)
+{
+    (void)gainMapF;
+    (void)numPixels;
+    (void)rangeMin;
+    (void)rangeMax;
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+
+avifResult avifRGBImageComputeGainMap(const avifRGBImage * baseRgbImage,
+                                      avifColorPrimaries baseColorPrimaries,
+                                      avifTransferCharacteristics baseTransferCharacteristics,
+                                      const avifRGBImage * altRgbImage,
+                                      avifColorPrimaries altColorPrimaries,
+                                      avifTransferCharacteristics altTransferCharacteristics,
+                                      avifGainMap * gainMap,
+                                      avifDiagnostics * diag)
+{
+    (void)baseRgbImage;
+    (void)baseColorPrimaries;
+    (void)baseTransferCharacteristics;
+    (void)altRgbImage;
+    (void)altColorPrimaries;
+    (void)altTransferCharacteristics;
+    (void)gainMap;
+    if (diag) {
+        avifDiagnosticsClearError(diag);
+        avifDiagnosticsPrintf(diag, "Gain map compute is disabled in decode-only builds");
+    }
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+
+avifResult avifImageComputeGainMap(const avifImage * baseImage, const avifImage * altImage, avifGainMap * gainMap, avifDiagnostics * diag)
+{
+    (void)baseImage;
+    (void)altImage;
+    (void)gainMap;
+    if (diag) {
+        avifDiagnosticsClearError(diag);
+        avifDiagnosticsPrintf(diag, "Gain map compute is disabled in decode-only builds");
+    }
+    return AVIF_RESULT_NOT_IMPLEMENTED;
+}
+
+#else // !AVIF_DECODE_ONLY
+
 // NaN-safe clamp to [0, 1]. AVIF_CLAMP passes NaN through because IEEE 754
 // comparisons with NaN always return false. fmaxf/fminf return the non-NaN
 // argument per C99 §7.12.12, so this clamps NaN to 0.
@@ -428,6 +528,8 @@ avifResult avifFindMinMaxWithoutOutliers(const float * gainMapF, size_t numPixel
     return AVIF_RESULT_OK;
 }
 
+#endif // !AVIF_DECODE_ONLY
+
 avifResult avifGainMapValidateMetadata(const avifGainMap * gainMap, avifDiagnostics * diag)
 {
     for (int i = 0; i < 3; ++i) {
@@ -485,6 +587,8 @@ avifBool avifSameGainMapAltMetadata(const avifGainMap * a, const avifGainMap * b
     }
     return AVIF_TRUE;
 }
+
+#if !defined(AVIF_DECODE_ONLY)
 
 static const float kEpsilon = 1e-10f;
 
@@ -911,3 +1015,5 @@ cleanup:
     avifRGBImageFreePixels(&altImageRgb);
     return res;
 }
+
+#endif // !AVIF_DECODE_ONLY

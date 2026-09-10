@@ -960,8 +960,8 @@ typedef enum avifRGBFormat
     //   r4 and r0 are the MSB and LSB of the red component respectively.
     //   g5 and g0 are the MSB and LSB of the green component respectively.
     //   b4 and b0 are the MSB and LSB of the blue component respectively.
-    // This format is only supported for YUV -> RGB conversion and when
-    // avifRGBImage.depth is set to 8.
+    // Upstream: YUV -> RGB only, depth 8. Android decode-only builds reject this
+    // format in avifImageYUVToRGB; monochrome Gray565 packing is JNI-only.
     AVIF_RGB_FORMAT_RGB_565,
     AVIF_RGB_FORMAT_GRAY,
     AVIF_RGB_FORMAT_GRAYA,
@@ -1229,14 +1229,16 @@ AVIF_API const char * avifProgressiveStateToString(avifProgressiveState progress
 typedef enum avifImageContentTypeFlag
 {
     AVIF_IMAGE_CONTENT_NONE = 0,
-    // Color only or alpha only is not currently supported.
-    AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA = (1 << 0) | (1 << 1),
+    AVIF_IMAGE_CONTENT_COLOR = (1 << 0),
+    AVIF_IMAGE_CONTENT_ALPHA = (1 << 1),
+    // Decode color and alpha together (default). Color-only is supported; alpha-only is not.
+    AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA = AVIF_IMAGE_CONTENT_COLOR | AVIF_IMAGE_CONTENT_ALPHA,
     AVIF_IMAGE_CONTENT_GAIN_MAP = (1 << 2),
     AVIF_IMAGE_CONTENT_ALL = AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA | AVIF_IMAGE_CONTENT_GAIN_MAP,
 
     // Mostly used for bit depth extensions to go beyond the underlying codec capability
     // (e.g. 16-bit AVIF). Not part of AVIF_IMAGE_CONTENT_ALL as this is a rare use case.
-    // Has no effect without AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA.
+    // Has no effect without AVIF_IMAGE_CONTENT_COLOR.
     AVIF_IMAGE_CONTENT_SAMPLE_TRANSFORMS = (1 << 3),
 
     AVIF_IMAGE_CONTENT_DECODE_DEFAULT = AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
@@ -1437,6 +1439,14 @@ AVIF_API avifResult avifDecoderParse(avifDecoder * decoder);
 AVIF_API avifResult avifDecoderNextImage(avifDecoder * decoder);
 AVIF_API avifResult avifDecoderNthImage(avifDecoder * decoder, uint32_t frameIndex);
 AVIF_API avifResult avifDecoderReset(avifDecoder * decoder);
+
+// Releases pixel buffers for the currently decoded image (owned planes and/or
+// codec-backed buffers such as a dav1d picture). Image metadata on
+// decoder->image is preserved. Call after you have copied or scaled pixels into
+// an independently owned avifImage so the full-size decode buffers can be freed
+// before a subsequent YUV→RGB conversion. The next avifDecoderNextImage() /
+// avifDecoderNthImage() call will re-decode as needed.
+AVIF_API void avifDecoderDropDecodedPlanes(avifDecoder * decoder);
 
 // Keyframe information
 // frameIndex - 0-based, matching avifDecoder->imageIndex, bound by avifDecoder->imageCount

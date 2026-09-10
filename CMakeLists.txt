@@ -76,6 +76,10 @@ option(AVIF_ENABLE_WERROR "Treat all compiler warnings as errors" OFF)
 option(AVIF_ENABLE_EXPERIMENTAL_MINI "Enable experimental reduced header" OFF)
 option(AVIF_ENABLE_EXPERIMENTAL_EXTENDED_PIXI "Enable experimental PixelInformationProperty syntax from HEIF 3rd Ed. Amd2" OFF)
 
+# Decode-only: exclude encoder (src/write.c), colrconvert.c, sampletransform.c;
+# stub encoder / gainmap Apply-Compute / RGB→YUV / sample-transform APIs; slim reformat paths.
+option(AVIF_DECODE_ONLY "Build decode-only (no encoder / write.c)" OFF)
+
 set(AVIF_PKG_CONFIG_EXTRA_LIBS_PRIVATE "")
 set(AVIF_PKG_CONFIG_EXTRA_REQUIRES_PRIVATE "")
 
@@ -358,11 +362,14 @@ if(AVIF_ENABLE_EXPERIMENTAL_EXTENDED_PIXI)
     add_compile_definitions(AVIF_ENABLE_EXPERIMENTAL_EXTENDED_PIXI)
 endif()
 
+if(AVIF_DECODE_ONLY)
+    add_compile_definitions(AVIF_DECODE_ONLY)
+endif()
+
 set(AVIF_SRCS
     src/alpha.c
     src/avif.c
     src/colr.c
-    src/colrconvert.c
     src/diag.c
     src/exif.c
     src/gainmap.c
@@ -375,12 +382,17 @@ set(AVIF_SRCS
     src/reformat.c
     src/reformat_libsharpyuv.c
     src/reformat_libyuv.c
-    src/sampletransform.c
     src/scale.c
     src/stream.c
     src/utils.c
-    src/write.c
 )
+
+if(AVIF_DECODE_ONLY)
+    list(APPEND AVIF_SRCS src/encode_stubs.c)
+    message(STATUS "libavif: AVIF_DECODE_ONLY enabled (encoder/write.c, colrconvert.c, sampletransform.c excluded)")
+else()
+    list(APPEND AVIF_SRCS src/write.c src/colrconvert.c src/sampletransform.c)
+endif()
 
 if(AVIF_ENABLE_COMPLIANCE_WARDEN)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ext/ComplianceWarden")

@@ -13,8 +13,12 @@ The changes are relative to the previous release, unless the baseline is specifi
 * Add the ignoreICC option to avifDecoder
 * avifenc: add --ignore-alpha flag to discard alpha channel on encode
 * avifgainmaputil: add --ignore-alpha flag to discard alpha channel
+* Android JNI: enable LTO/IPO for Release native builds (dav1d/libyuv Android
+  scripts and LocalDav1d on Android also build with LTO)
+* ext/libyuv_android.sh: disable JPEG/MJPEG (`CMAKE_DISABLE_FIND_PACKAGE_JPEG`)
 
 ### Changed since 1.4.2
+* Android JNI: use link-u/dav1d (`avif` branch) instead of videolan dav1d
 
 * Update LocalAvm.cmake: v1.0.0
 * Update libyuv.cmd/LocalLibyuv.cmake: 5d03bf9ba (1949)

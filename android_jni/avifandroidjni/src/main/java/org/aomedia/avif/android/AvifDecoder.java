@@ -19,6 +19,9 @@ import java.nio.ByteBuffer;
  * following are the methods that can be accessed this way: {@link isAvifImage}, {@link getInfo} and
  * {@link decode}. The {@link Info} inner class is used only in this case.
  *
+ * <p>For direct {@link android.hardware.HardwareBuffer} output on API 29+, use {@link
+ * AvifHardwareDecoder} instead.
+ *
  * <p>2) As an instantiated regular class.
  *
  * <p>When used this way, the {@link create} method must be used to create an instance of this class
@@ -110,10 +113,8 @@ public class AvifDecoder {
    * @param bitmap The decoded pixels will be copied into the bitmap.
    *     If the bitmap dimensions do not match the decoded image's dimensions,
    *               then the decoded image will be scaled to match the bitmap's dimensions.
-   * @param threads Number of threads to be used for the AVIF decode. Zero means use the library
-   *     determined optimal value as the thread count. Negative values mean use the number of CPU
-   *     cores as the thread count. For more details, see the documentation for maxThreads variable
-   *     in avif.h.
+   * @param threads Ignored. Decoding always uses a single thread (maxThreads=1)
+   *     to reduce RAM (dav1d worker / scratch buffers). Kept for API compatibility.
    * @return true on success and false on failure.
    */
   public static native boolean decode(ByteBuffer encoded, int length, Bitmap bitmap, int threads);
@@ -156,6 +157,11 @@ public class AvifDecoder {
     return frameDurations;
   }
 
+  /** Returns true if the underlying native decoder is still alive. */
+  public boolean isAlive() {
+    return decoder != 0;
+  }
+
   /** Releases the underlying decoder object. */
   public void release() {
     if (decoder != 0) {
@@ -181,10 +187,8 @@ public class AvifDecoder {
    *
    * @param encoded The encoded AVIF image. encoded.position() must be 0. The memory of this
    *     ByteBuffer must be kept alive until release() is called.
-   * @param threads Number of threads to be used by the decoder. Zero means use number of CPU cores
-   *     as the thread count. Negative values are invalid. When this value is > 0, it is simply
-   *     mapped to the maxThreads parameter in libavif. For more details, see the documentation for
-   *     maxThreads variable in avif.h.
+   * @param threads Ignored. Decoding always uses a single thread (maxThreads=1)
+   *     to reduce RAM. Kept for API compatibility.
    * @return null on failure. AvifDecoder object on success.
    */
   @Nullable
@@ -252,6 +256,10 @@ public class AvifDecoder {
    * libyuv version (if available).
    */
   public static native String versionString();
+
+  long getNativeDecoderHandle() {
+    return decoder;
+  }
 
   private native long createDecoder(ByteBuffer encoded, int length, int threads);
 

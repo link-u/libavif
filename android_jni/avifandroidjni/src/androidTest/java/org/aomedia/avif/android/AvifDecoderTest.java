@@ -5,6 +5,9 @@ import static com.google.common.truth.Truth.assertThat;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.Config;
+import android.graphics.ColorSpace;
+import android.hardware.HardwareBuffer;
+import android.os.Build;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,7 +23,13 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
 import org.junit.runners.Parameterized.Parameters;
 
-/** Instrumentation tests for the libavif JNI API, which will execute on an Android device. */
+/**
+ * Instrumentation tests for the libavif JNI API, which will execute on an Android device.
+ *
+ * <p>The Android dav1d build uses {@code -Dbitdepths=8}, so pixel decoding is exercised only for
+ * 8-bit images. 10/12-bit assets are still used to verify header parsing ({@link
+ * AvifDecoder#getInfo}) and that decode paths fail cleanly.
+ */
 @RunWith(Parameterized.class)
 public class AvifDecoderTest {
 
@@ -97,6 +106,12 @@ public class AvifDecoderTest {
 
   private static final float[] SCALE_FACTORS = {0.5f, 1.3f};
 
+  // Matches ext/dav1d_android.sh / LocalDav1d.cmake (-Dbitdepths=8).
+  // imageCountLimit=1 rejects animated / multi-frame AVIFs at parse time.
+  private boolean isDecodeSupported() {
+    return image.depth == 8 && !image.isAnimated;
+  }
+
   private static final Image[] IMAGES = {
     // Parameter ordering for still images: directory, filename, width, height, depth, alphaPresent,
     // threads.
@@ -112,7 +127,8 @@ public class AvifDecoderTest {
     new Image("avif", "fox.profile2.12bpc.yuv422.avif", 1204, 800, 12, false, 1),
     new Image("avif", "fox.profile2.12bpc.yuv444.avif", 1204, 800, 12, false, 1),
     new Image("avif", "fox.profile2.8bpc.yuv422.avif", 1204, 800, 8, false, 1),
-    new Image("avif", "blue-and-magenta-crop.avif", 180, 100, 8, true, 1),
+    // Encoded size (clap crop is ignored by the JNI decoder).
+    new Image("avif", "blue-and-magenta-crop.avif", 320, 280, 8, true, 1),
     // Parameter ordering for animated images: directory, filename, width, height, depth,
     // alphaPresent, frameCount, repetitionCount, frameDuration, threads.
     new Image("animated_avif", "alpha_video.avif", 640, 480, 8, true, 48, -2, 0.04, 1),
@@ -124,12 +140,8 @@ public class AvifDecoderTest {
   public static List<Object[]> data() throws IOException {
     ArrayList<Object[]> list = new ArrayList<>();
     for (Image image : IMAGES) {
-      // Test ARGB_8888 for all files.
+      // Bitmap soft path supports ARGB_8888 only. RGB_565 is Gray565 HardwareBuffer only.
       list.add(new Object[] {Config.ARGB_8888, image});
-      // For 8bpc files and animated files, test only RGB_565 (F16 is flaky for animated files on
-      // x86 emulators). For other files, test only RGBA_F16.
-      Config testConfig = (image.depth == 8 || image.isAnimated) ? Config.RGB_565 : Config.RGBA_F16;
-      list.add(new Object[] {testConfig, image});
     }
     return list;
   }
@@ -158,6 +170,11 @@ public class AvifDecoderTest {
     assertThat(info.alphaPresent).isEqualTo(image.alphaPresent);
     Bitmap bitmap = Bitmap.createBitmap(info.width, info.height, config);
     assertThat(bitmap).isNotNull();
+    if (!isDecodeSupported()) {
+      // 8-bit-only dav1d cannot decode 10/12-bit streams.
+      assertThat(AvifDecoder.decode(buffer, buffer.remaining(), bitmap)).isFalse();
+      return;
+    }
     assertThat(AvifDecoder.decode(buffer, buffer.remaining(), bitmap)).isTrue();
 
     // Test scaling. These tests can be a bit slow on emulators, so only run them when config is
@@ -198,6 +215,11 @@ public class AvifDecoderTest {
     assertThat(decoder.getFrameCount()).isEqualTo(image.frameCount);
     Bitmap bitmap = Bitmap.createBitmap(image.width, image.height, config);
     assertThat(bitmap).isNotNull();
+    if (!isDecodeSupported()) {
+      assertThat(decoder.nextFrame(bitmap)).isNotEqualTo(AVIF_RESULT_OK);
+      decoder.release();
+      return;
+    }
     for (int i = 0; i < image.frameCount; i++) {
       assertThat(decoder.nextFrameIndex()).isEqualTo(i);
       assertThat(decoder.nextFrame(bitmap)).isEqualTo(AVIF_RESULT_OK);
@@ -252,6 +274,83 @@ public class AvifDecoderTest {
           assertThat(decoder.nextFrame(bitmap)).isEqualTo(AVIF_RESULT_OK);
         }
       }
+    }
+    decoder.release();
+  }
+
+  @Test
+  public void testDecodeToHardwareBuffer() throws IOException {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+      return;
+    }
+    if (image.isAnimated || config != Config.ARGB_8888) {
+      return;
+    }
+    ByteBuffer buffer = image.getBuffer();
+    assertThat(buffer).isNotNull();
+    Info info = new Info();
+    assertThat(AvifDecoder.getInfo(buffer, buffer.remaining(), info)).isTrue();
+
+    HardwareBuffer hardwareBuffer =
+        AvifHardwareDecoder.decodeToHardwareBuffer(buffer, buffer.remaining(), image.threads);
+    if (!isDecodeSupported()) {
+      assertThat(hardwareBuffer).isNull();
+      return;
+    }
+    assertThat(hardwareBuffer).isNotNull();
+    assertThat(hardwareBuffer.getWidth()).isEqualTo(info.width);
+    assertThat(hardwareBuffer.getHeight()).isEqualTo(info.height);
+    assertThat(hardwareBuffer.getFormat()).isEqualTo(HardwareBuffer.RGBA_8888);
+    hardwareBuffer.close();
+
+    for (float scaleFactor : SCALE_FACTORS) {
+      int targetWidth = (int) (info.width * scaleFactor);
+      int targetHeight = (int) (info.height * scaleFactor);
+      hardwareBuffer =
+          AvifHardwareDecoder.decodeToHardwareBuffer(
+              buffer, buffer.remaining(), targetWidth, targetHeight, image.threads);
+      assertThat(hardwareBuffer).isNotNull();
+      assertThat(hardwareBuffer.getWidth()).isEqualTo(targetWidth);
+      assertThat(hardwareBuffer.getHeight()).isEqualTo(targetHeight);
+      Bitmap hardwareBitmap =
+          Bitmap.wrapHardwareBuffer(hardwareBuffer, ColorSpace.get(ColorSpace.Named.SRGB));
+      assertThat(hardwareBitmap).isNotNull();
+      assertThat(hardwareBitmap.getWidth()).isEqualTo(targetWidth);
+      assertThat(hardwareBitmap.getHeight()).isEqualTo(targetHeight);
+      hardwareBitmap.recycle();
+      hardwareBuffer.close();
+    }
+  }
+
+  @Test
+  public void testDecodeToHardwareBufferRegularClass() throws IOException {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+      return;
+    }
+    if (config != Config.ARGB_8888) {
+      return;
+    }
+    ByteBuffer buffer = image.getBuffer();
+    assertThat(buffer).isNotNull();
+    AvifDecoder decoder = AvifDecoder.create(buffer, image.threads);
+    assertThat(decoder).isNotNull();
+    if (!isDecodeSupported()) {
+      assertThat(AvifHardwareDecoder.nextFrameHardwareBuffer(decoder)).isNull();
+      decoder.release();
+      return;
+    }
+    for (int i = 0; i < image.frameCount; ++i) {
+      assertThat(decoder.nextFrameIndex()).isEqualTo(i);
+      HardwareBuffer hardwareBuffer = AvifHardwareDecoder.nextFrameHardwareBuffer(decoder);
+      assertThat(hardwareBuffer).isNotNull();
+      assertThat(hardwareBuffer.getWidth()).isEqualTo(image.width);
+      assertThat(hardwareBuffer.getHeight()).isEqualTo(image.height);
+      hardwareBuffer.close();
+    }
+    if (image.isAnimated) {
+      HardwareBuffer hardwareBuffer = AvifHardwareDecoder.nthFrameHardwareBuffer(decoder, 0);
+      assertThat(hardwareBuffer).isNotNull();
+      hardwareBuffer.close();
     }
     decoder.release();
   }

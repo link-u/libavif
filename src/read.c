@@ -5289,10 +5289,10 @@ avifResult avifDecoderParse(avifDecoder * decoder)
 {
     avifDiagnosticsClearError(&decoder->diag);
 
-    // Color only or alpha only is not currently supported.
-    if ((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) != 0 &&
-        (decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) != AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) {
-        avifDiagnosticsPrintf(&decoder->diag, "imageContentToDecode set to only color or only alpha is not supported");
+    // Alpha-only is not supported. Color-only is allowed (skips alpha decode).
+    if ((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA) &&
+        !(decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR)) {
+        avifDiagnosticsPrintf(&decoder->diag, "imageContentToDecode set to only alpha is not supported");
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
     if (!decoder->io || !decoder->io->read) {
@@ -6001,6 +6001,11 @@ static avifResult avifDecoderCheckGainMapProperties(avifDecoder * decoder, const
 // and in the same 'altr' group as the primary image item. Returns NULL otherwise.
 static avifDecoderItem * avifDecoderDataFindSampleTransformImageItem(avifDecoderData * data)
 {
+#if defined(AVIF_DECODE_ONLY)
+    // Sample Transform / bit-depth extension disabled for Android 8-bit decode-only builds.
+    (void)data;
+    return NULL;
+#else
     for (uint32_t itemIndex = 0; itemIndex < data->meta->items.count; ++itemIndex) {
         avifDecoderItem * item = data->meta->items.item[itemIndex];
         if (!memcmp(item->type, "sato", 4) && item->id != data->meta->primaryItemID && item->size != 0 &&
@@ -6010,6 +6015,7 @@ static avifDecoderItem * avifDecoderDataFindSampleTransformImageItem(avifDecoder
         }
     }
     return NULL;
+#endif
 }
 
 static avifResult avifDecoderGenerateImageTiles(avifDecoder * decoder, avifTileInfo * info, avifDecoderItem * item, avifItemCategory itemCategory)
@@ -6071,6 +6077,25 @@ static avifResult avifReadCodecConfigProperty(avifImage * image, const avifPrope
     return AVIF_RESULT_OK;
 }
 
+void avifDecoderDropDecodedPlanes(avifDecoder * decoder)
+{
+    if (!decoder) {
+        return;
+    }
+    if (decoder->image) {
+        avifImageFreePlanes(decoder->image, AVIF_PLANES_ALL);
+        if (decoder->image->gainMap && decoder->image->gainMap->image) {
+            avifImageFreePlanes(decoder->image->gainMap->image, AVIF_PLANES_ALL);
+        }
+    }
+    if (decoder->data) {
+        // Destroys codec instances (e.g. unrefs dav1d pictures) and forgets
+        // tile plane pointers into those buffers. Codecs are recreated on the
+        // next avifDecoderNextImage() / avifDecoderNthImage() call.
+        avifDecoderDataResetCodec(decoder->data);
+    }
+}
+
 avifResult avifDecoderReset(avifDecoder * decoder)
 {
     avifDiagnosticsClearError(&decoder->diag);
@@ -6097,10 +6122,10 @@ avifResult avifDecoderReset(avifDecoder * decoder)
 
     memset(&decoder->ioStats, 0, sizeof(decoder->ioStats));
 
-    // Color only or alpha only is not currently supported.
-    if ((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) != 0 &&
-        (decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) != AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) {
-        avifDiagnosticsPrintf(&decoder->diag, "imageContentToDecode set to only color or only alpha is not supported");
+    // Alpha-only is not supported. Color-only is allowed (skips alpha decode).
+    if ((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA) &&
+        !(decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR)) {
+        avifDiagnosticsPrintf(&decoder->diag, "imageContentToDecode set to only alpha is not supported");
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
 
@@ -6230,7 +6255,7 @@ avifResult avifDecoderReset(avifDecoder * decoder)
                                                               data->diag));
         data->tileInfos[AVIF_ITEM_COLOR].tileCount = 1;
 
-        if (alphaTrack) {
+        if (alphaTrack && (decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA)) {
             avifTile * alphaTile = avifDecoderDataCreateTile(data, alphaCodecType, alphaTrack->width, alphaTrack->height, operatingPoint);
             AVIF_CHECKERR(alphaTile != NULL, AVIF_RESULT_OUT_OF_MEMORY);
             AVIF_CHECKRES(avifCodecDecodeInputFillFromSampleTable(alphaTile->input,
@@ -6304,7 +6329,7 @@ avifResult avifDecoderReset(avifDecoder * decoder)
                                             &mainItems[AVIF_ITEM_ALPHA],
                                             &data->tileInfos[AVIF_ITEM_ALPHA],
                                             &isAlphaItemInInput));
-        if (mainItems[AVIF_ITEM_ALPHA]) {
+        if (mainItems[AVIF_ITEM_ALPHA] && (decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA)) {
             AVIF_CHECKRES(avifDecoderItemReadAndParse(decoder,
                                                       mainItems[AVIF_ITEM_ALPHA],
                                                       isAlphaItemInInput,
@@ -6465,13 +6490,17 @@ avifResult avifDecoderReset(avifDecoder * decoder)
 
             AVIF_CHECKRES(avifDecoderAdoptGridTileCodecTypeIfNeeded(decoder, mainItems[c], &data->tileInfos[c]));
 
-            if (c == AVIF_ITEM_COLOR || c == AVIF_ITEM_ALPHA) {
-                if (!(decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA)) {
+            if (c == AVIF_ITEM_COLOR) {
+                if (!(decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR)) {
+                    continue;
+                }
+            } else if (c == AVIF_ITEM_ALPHA) {
+                if (!(decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA)) {
                     continue;
                 }
             } else if (c == AVIF_ITEM_SAMPLE_TRANSFORM_INPUT_0_COLOR || c == AVIF_ITEM_SAMPLE_TRANSFORM_INPUT_1_COLOR ||
                        c == AVIF_ITEM_SAMPLE_TRANSFORM_INPUT_0_ALPHA || c == AVIF_ITEM_SAMPLE_TRANSFORM_INPUT_1_ALPHA) {
-                AVIF_ASSERT_OR_RETURN((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA) &&
+                AVIF_ASSERT_OR_RETURN((decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_COLOR) &&
                                       (decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_SAMPLE_TRANSFORMS));
             } else {
                 AVIF_ASSERT_OR_RETURN(c == AVIF_ITEM_GAIN_MAP);

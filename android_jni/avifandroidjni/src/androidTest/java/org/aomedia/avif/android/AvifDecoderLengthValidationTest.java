@@ -274,15 +274,12 @@ public class AvifDecoderLengthValidationTest {
 
   @Test
   public void create_truncatedFtypDirect_returnsNull() {
-    // The tiny_ftyp 8-byte payload is not a valid AVIF — create() must return
-    // null without crashing.
     ByteBuffer buf = tinyFtypDirectBuffer();
     assertNull(AvifDecoder.create(buf));
   }
 
   @Test
   public void create_heapBackedBuffer_returnsNull() {
-    // Non-direct buffer: GetDirectBufferCapacity returns -1 -> clean failure.
     ByteBuffer buf = tinyFtypHeapBuffer();
     assertNull(AvifDecoder.create(buf));
   }
@@ -295,8 +292,6 @@ public class AvifDecoderLengthValidationTest {
 
   @Test
   public void create_validImage_stillReturnsNonNull() throws IOException {
-    // PLAN.md §5 layer-2 case #8: guards against the private createDecoder
-    // hardening accidentally rejecting the happy path.
     ByteBuffer buf = loadDirectAssetBuffer("avif/fox.profile0.8bpc.yuv420.avif");
     AvifDecoder decoder = AvifDecoder.create(buf);
     assertNotNull(decoder);

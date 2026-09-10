@@ -1,4 +1,7 @@
 set(AVIF_DAV1D_TAG "1.5.3")
+# Android JNI pulls link-u/dav1d (avif branch) instead of upstream videolan.
+set(AVIF_DAV1D_ANDROID_GIT_REPOSITORY "https://github.com/link-u/dav1d.git")
+set(AVIF_DAV1D_ANDROID_GIT_TAG "avif")
 
 function(avif_build_local_dav1d)
     set(download_step_args)
@@ -8,9 +11,15 @@ function(avif_build_local_dav1d)
     else()
         message(STATUS "libavif(AVIF_CODEC_DAV1D=LOCAL): ext/dav1d not found, fetching")
         set(source_dir "${FETCHCONTENT_BASE_DIR}/dav1d-src")
-        list(APPEND download_step_args GIT_REPOSITORY https://code.videolan.org/videolan/dav1d.git GIT_TAG ${AVIF_DAV1D_TAG}
-             GIT_SHALLOW ON
-        )
+        if(ANDROID)
+            list(APPEND download_step_args GIT_REPOSITORY ${AVIF_DAV1D_ANDROID_GIT_REPOSITORY}
+                 GIT_TAG ${AVIF_DAV1D_ANDROID_GIT_TAG} GIT_SHALLOW ON
+            )
+        else()
+            list(APPEND download_step_args GIT_REPOSITORY https://code.videolan.org/videolan/dav1d.git
+                 GIT_TAG ${AVIF_DAV1D_TAG} GIT_SHALLOW ON
+            )
+        endif()
     endif()
 
     find_program(NINJA_EXECUTABLE NAMES ninja ninja-build REQUIRED)
@@ -27,17 +36,46 @@ function(avif_build_local_dav1d)
     if(ANDROID)
         list(APPEND CMAKE_PROGRAM_PATH "${ANDROID_TOOLCHAIN_ROOT}/bin")
 
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7-a")
-            set(android_arch "arm")
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-            set(android_arch "aarch64")
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-            set(android_arch "x86_64")
-        else()
-            set(android_arch "x86")
+        # NDK r27+ dropped API levels below 21. Generate a cross-file with API 21
+        # instead of dav1d's stock package/crossfiles (x86 still used API 19).
+        # Matches android_jni minSdk / ext/dav1d_android.sh.
+        if(NOT DEFINED ANDROID_PLATFORM_LEVEL AND ANDROID_NATIVE_API_LEVEL)
+            set(ANDROID_PLATFORM_LEVEL ${ANDROID_NATIVE_API_LEVEL})
+        endif()
+        if(NOT ANDROID_PLATFORM_LEVEL OR ANDROID_PLATFORM_LEVEL LESS 21)
+            set(ANDROID_PLATFORM_LEVEL 21)
         endif()
 
-        set(CROSS_FILE "${source_dir}/package/crossfiles/${android_arch}-android.meson")
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7-a")
+            set(dav1d_android_cpu_family "arm")
+            set(dav1d_android_cpu "arm")
+            set(dav1d_android_clang_prefix "armv7a-linux-androideabi")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+            set(dav1d_android_cpu_family "aarch64")
+            set(dav1d_android_cpu "aarch64")
+            set(dav1d_android_clang_prefix "aarch64-linux-android")
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+            set(dav1d_android_cpu_family "x86_64")
+            set(dav1d_android_cpu "x86_64")
+            set(dav1d_android_clang_prefix "x86_64-linux-android")
+        else()
+            set(dav1d_android_cpu_family "x86")
+            set(dav1d_android_cpu "i686")
+            set(dav1d_android_clang_prefix "i686-linux-android")
+        endif()
+
+        set(dav1d_android_toolchain_bin "${ANDROID_TOOLCHAIN_ROOT}/bin")
+        set(dav1d_android_c
+            "${dav1d_android_toolchain_bin}/${dav1d_android_clang_prefix}${ANDROID_PLATFORM_LEVEL}-clang"
+        )
+        set(dav1d_android_cpp
+            "${dav1d_android_toolchain_bin}/${dav1d_android_clang_prefix}${ANDROID_PLATFORM_LEVEL}-clang++"
+        )
+        set(dav1d_android_ar "${dav1d_android_toolchain_bin}/llvm-ar")
+        set(dav1d_android_strip "${dav1d_android_toolchain_bin}/llvm-strip")
+
+        set(CROSS_FILE "${PROJECT_BINARY_DIR}/crossfile-android-${ANDROID_ABI}.meson")
+        configure_file("${AVIF_SOURCE_DIR}/cmake/Meson/crossfile-android.meson.in" "${CROSS_FILE}" @ONLY)
     elseif(APPLE)
         # If we are cross compiling generate the corresponding file to use with meson
         if(NOT CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
@@ -74,6 +112,12 @@ function(avif_build_local_dav1d)
     endif()
     file(MAKE_DIRECTORY ${install_dir}/include)
 
+    if(ANDROID)
+        set(DAV1D_BITDEPTHS_ARG -Dbitdepths=8)
+        # Match android_jni LTO so libdav1d.a contains bitcode for the final .so link.
+        set(DAV1D_LTO_ARG -Db_lto=true)
+    endif()
+
     ExternalProject_Add(
         dav1d
         ${download_step_args}
@@ -89,7 +133,7 @@ function(avif_build_local_dav1d)
         CONFIGURE_COMMAND
             ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${MESON_EXECUTABLE} setup --buildtype=release --default-library=static
             --prefix=<INSTALL_DIR> --libdir=lib -Denable_asm=true -Denable_tools=false -Denable_examples=false
-            -Denable_tests=false ${EXTRA_ARGS} <SOURCE_DIR>
+            -Denable_tests=false ${DAV1D_BITDEPTHS_ARG} ${DAV1D_LTO_ARG} ${EXTRA_ARGS} <SOURCE_DIR>
         BUILD_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR>
         INSTALL_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR> install
         BUILD_BYPRODUCTS <INSTALL_DIR>/lib/libdav1d.a

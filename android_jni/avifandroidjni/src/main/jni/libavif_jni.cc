@@ -1,17 +1,26 @@
 // Copyright 2022 Google LLC
 // SPDX-License-Identifier: BSD-2-Clause
 
+#include <android/api-level.h>
 #include <android/bitmap.h>
+#include <android/hardware_buffer.h>
 #include <android/log.h>
-#include <cpu-features.h>
+#include <dlfcn.h>
 #include <jni.h>
+#include <sys/system_properties.h>
 
-#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <new>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 #include "avif/avif.h"
+#include "gles_r8_writer.h"
 
 #define LOG_TAG "avif_jni"
 #define LOGE(...) \
@@ -25,11 +34,148 @@
   JNIEXPORT RETURN_TYPE Java_org_aomedia_avif_android_AvifDecoder_##NAME( \
       JNIEnv* env, jobject thiz, ##__VA_ARGS__)
 
+#define HW_FUNC(RETURN_TYPE, NAME, ...)                                           \
+  extern "C" {                                                                    \
+  JNIEXPORT RETURN_TYPE                                                           \
+  Java_org_aomedia_avif_android_AvifHardwareDecoder_##NAME(JNIEnv* env, jclass clazz, \
+                                                           ##__VA_ARGS__);        \
+  }                                                                               \
+  JNIEXPORT RETURN_TYPE                                                           \
+  Java_org_aomedia_avif_android_AvifHardwareDecoder_##NAME(JNIEnv* env, jclass clazz, \
+                                                           ##__VA_ARGS__)
+
 #define IGNORE_UNUSED_JNI_PARAMETERS \
   (void) env; \
   (void) thiz
 
+#define IGNORE_UNUSED_HW_JNI_PARAMETERS \
+  (void)env;                            \
+  (void)clazz
+
 namespace {
+
+// AHARDWAREBUFFER_FORMAT_R8_UNORM. Spelled out because the NDK header only
+// declares it from API 33 (android-33) while this module targets an older
+// compileSdk / platform header set. Eligibility is gated at runtime on the
+// device API level, see ShouldUseR8Output().
+constexpr uint32_t kAHardwareBufferFormatR8Unorm = 0x38;
+// Bitmap.wrapHardwareBuffer() only accepts HardwareBuffer.R_8 from API 33.
+constexpr int kMinApiLevelForR8Bitmap = 33;
+
+using AHardwareBuffer_allocate_fn = int (*)(const AHardwareBuffer_Desc*, AHardwareBuffer**);
+using AHardwareBuffer_describe_fn = void (*)(const AHardwareBuffer*, AHardwareBuffer_Desc*);
+using AHardwareBuffer_lock_fn = int (*)(AHardwareBuffer*, uint64_t, int32_t, const ARect*,
+                                        void**);
+using AHardwareBuffer_unlock_fn = int (*)(AHardwareBuffer*, int32_t*);
+using AHardwareBuffer_release_fn = void (*)(AHardwareBuffer*);
+using AHardwareBuffer_toHardwareBuffer_fn = jobject (*)(JNIEnv*, AHardwareBuffer*);
+
+struct HardwareBufferApi {
+  void* buffer_library = nullptr;
+  void* android_library = nullptr;
+  AHardwareBuffer_allocate_fn allocate = nullptr;
+  AHardwareBuffer_describe_fn describe = nullptr;
+  AHardwareBuffer_lock_fn lock = nullptr;
+  AHardwareBuffer_unlock_fn unlock = nullptr;
+  AHardwareBuffer_release_fn release = nullptr;
+  AHardwareBuffer_toHardwareBuffer_fn to_hardware_buffer = nullptr;
+  bool available = false;
+};
+
+void CloseHardwareBufferLibraries(HardwareBufferApi* api) {
+  if (api->buffer_library != nullptr) {
+    dlclose(api->buffer_library);
+    api->buffer_library = nullptr;
+  }
+  if (api->android_library != nullptr) {
+    dlclose(api->android_library);
+    api->android_library = nullptr;
+  }
+}
+
+void* LoadSymbolFromLibrary(void* library, const char* symbol) {
+  if (library == nullptr) {
+    return nullptr;
+  }
+  dlerror();
+  void* symbol_address = dlsym(library, symbol);
+  if (symbol_address == nullptr) {
+    LOGE("Failed to dlsym %s: %s.", symbol, dlerror());
+  }
+  return symbol_address;
+}
+
+int GetDeviceApiLevel() {
+  const int api_level = android_get_device_api_level();
+  if (api_level > 0) {
+    return api_level;
+  }
+
+  char sdk_version[PROP_VALUE_MAX] = {};
+  if (__system_property_get("ro.build.version.sdk", sdk_version) <= 0) {
+    return 0;
+  }
+  return atoi(sdk_version);
+}
+
+void LoadHardwareBufferApi(HardwareBufferApi* api) {
+  if (GetDeviceApiLevel() < 29) {
+    LOGE("HardwareBuffer decode requires API 29+.");
+    return;
+  }
+
+  // Core AHardwareBuffer symbols are exported from libnativewindow.so and/or
+  // libandroid.so depending on the device. The JNI conversion helper
+  // AHardwareBuffer_toHardwareBuffer is exported from libandroid.so.
+  api->buffer_library = dlopen("libnativewindow.so", RTLD_NOW);
+  api->android_library = dlopen("libandroid.so", RTLD_NOW);
+  if (api->android_library == nullptr) {
+    LOGE("Failed to dlopen libandroid.so: %s.", dlerror());
+    CloseHardwareBufferLibraries(api);
+    return;
+  }
+
+  auto load_buffer_symbol = [&](const char* symbol) -> void* {
+    void* symbol_address = LoadSymbolFromLibrary(api->buffer_library, symbol);
+    if (symbol_address == nullptr) {
+      symbol_address = LoadSymbolFromLibrary(api->android_library, symbol);
+    }
+    return symbol_address;
+  };
+
+  api->allocate = reinterpret_cast<AHardwareBuffer_allocate_fn>(
+      load_buffer_symbol("AHardwareBuffer_allocate"));
+  api->describe = reinterpret_cast<AHardwareBuffer_describe_fn>(
+      load_buffer_symbol("AHardwareBuffer_describe"));
+  api->lock = reinterpret_cast<AHardwareBuffer_lock_fn>(
+      load_buffer_symbol("AHardwareBuffer_lock"));
+  api->unlock = reinterpret_cast<AHardwareBuffer_unlock_fn>(
+      load_buffer_symbol("AHardwareBuffer_unlock"));
+  api->release = reinterpret_cast<AHardwareBuffer_release_fn>(
+      load_buffer_symbol("AHardwareBuffer_release"));
+  api->to_hardware_buffer =
+      reinterpret_cast<AHardwareBuffer_toHardwareBuffer_fn>(LoadSymbolFromLibrary(
+          api->android_library, "AHardwareBuffer_toHardwareBuffer"));
+
+  if (api->allocate == nullptr || api->describe == nullptr ||
+      api->lock == nullptr || api->unlock == nullptr ||
+      api->release == nullptr || api->to_hardware_buffer == nullptr) {
+    CloseHardwareBufferLibraries(api);
+    return;
+  }
+
+  api->available = true;
+}
+
+const HardwareBufferApi& GetHardwareBufferApi() {
+  static std::once_flag init_flag;
+  static HardwareBufferApi api;
+  std::call_once(init_flag, []() { LoadHardwareBufferApi(&api); });
+  return api;
+}
+
+int getThreadCount(int threads);
+bool JniExceptionCheck(JNIEnv* env);
 
 // RAII wrapper class that properly frees the decoder related objects on
 // destruction.
@@ -47,7 +193,6 @@ struct AvifDecoderWrapper {
   }
 
   avifDecoder* decoder = nullptr;
-  avifCropRect crop;
 };
 
 // Returns true when `encoded` is a direct ByteBuffer of at least `length`
@@ -92,10 +237,15 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
   decoder->decoder->maxThreads = threads;
   decoder->decoder->ignoreXMP = AVIF_TRUE;
   decoder->decoder->ignoreExif = AVIF_TRUE;
+  decoder->decoder->ignoreICC = AVIF_TRUE;
+  // Still-image only: reject animated / multi-frame AVIFs early to avoid
+  // allocating per-frame timing and decoder state for sequences.
+  decoder->decoder->imageCountLimit = 1;
+  // Start color-only; enable alpha later if the output format needs it.
+  decoder->decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR;
 
-  // Turn off libavif's 'clap' (clean aperture) property validation. This allows
-  // us to detect and ignore streams that have an invalid 'clap' property
-  // instead failing.
+  // Ignore invalid 'clap' (clean aperture); we never apply crop and always use
+  // the encoded image dimensions.
   decoder->decoder->strictFlags &= ~AVIF_STRICT_CLAP_VALID;
   // Allow 'pixi' (pixel information) property to be missing. Older versions of
   // libheif did not add the 'pixi' item property to AV1 image items (See
@@ -112,23 +262,411 @@ bool CreateDecoderAndParse(AvifDecoderWrapper* const decoder,
     LOGE("Failed to parse AVIF image: %s.", avifResultToString(res));
     return false;
   }
+  return true;
+}
 
-  avifDiagnostics diag;
-  // If the image does not have a valid 'clap' property, then we simply display
-  // the whole image.
-  // TODO(vigneshv): Handle the case of avifCropRectRequiresUpsampling()
-  //                 returning true.
-  if (!(decoder->decoder->image->transformFlags & AVIF_TRANSFORM_CLAP) ||
-      !avifCropRectFromCleanApertureBox(
-          &decoder->crop, &decoder->decoder->image->clap,
-          decoder->decoder->image->width, decoder->decoder->image->height,
-          &diag) ||
-      avifCropRectRequiresUpsampling(&decoder->crop,
-                                     decoder->decoder->image->yuvFormat)) {
-    decoder->crop.width = decoder->decoder->image->width;
-    decoder->crop.height = decoder->decoder->image->height;
-    decoder->crop.x = 0;
-    decoder->crop.y = 0;
+void GetTargetDimensions(AvifDecoderWrapper* const decoder, int target_width,
+                         int target_height, uint32_t* dst_width,
+                         uint32_t* dst_height) {
+  if (target_width > 0 && target_height > 0) {
+    *dst_width = static_cast<uint32_t>(target_width);
+    *dst_height = static_cast<uint32_t>(target_height);
+  } else {
+    *dst_width = decoder->decoder->image->width;
+    *dst_height = decoder->decoder->image->height;
+  }
+}
+
+avifImage* PrepareImageForOutput(AvifDecoderWrapper* const decoder,
+                                 uint32_t dst_width, uint32_t dst_height,
+                                 avifResult* res,
+                                 std::unique_ptr<avifImage, decltype(&avifImageDestroy)>&
+                                     scaling_image) {
+  avifImage* image = decoder->decoder->image;
+  if (image->width != dst_width || image->height != dst_height) {
+    // Scale a non-owning full-image view so that the decoder image remains
+    // unchanged. avifImageScale() can read non-owning source planes directly
+    // and allocates only the destination planes.
+    scaling_image.reset(avifImageCreateEmpty());
+    if (scaling_image == nullptr) {
+      LOGE("Failed to allocate image view for scaling.");
+      *res = AVIF_RESULT_OUT_OF_MEMORY;
+      return nullptr;
+    }
+    const avifCropRect full_image = {0, 0, image->width, image->height};
+    *res = avifImageSetViewRect(scaling_image.get(), image, &full_image);
+    if (*res != AVIF_RESULT_OK) {
+      LOGE("Failed to create image view for scaling. Status: %d", *res);
+      return nullptr;
+    }
+    image = scaling_image.get();
+    avifDiagnostics diag;
+    *res = avifImageScale(image, dst_width, dst_height, &diag);
+    if (*res != AVIF_RESULT_OK) {
+      LOGE("Failed to scale image. Status: %d", *res);
+      return nullptr;
+    }
+    // avifImageScale() left the source (dav1d / decoder) buffers intact because
+    // the scaled image was a non-owning view. Drop them now so YUV→RGB only
+    // retains the smaller scaled planes + the RGB destination.
+    avifDecoderDropDecodedPlanes(decoder->decoder);
+  }
+  *res = AVIF_RESULT_OK;
+  return image;
+}
+
+// Enables alpha decode (and resets) when the output needs it and the file has alpha.
+avifResult EnsureAlphaContentIfNeeded(AvifDecoderWrapper* const decoder,
+                                      bool need_alpha) {
+  if (!need_alpha || !decoder->decoder->alphaPresent) {
+    return AVIF_RESULT_OK;
+  }
+  if (decoder->decoder->imageContentToDecode & AVIF_IMAGE_CONTENT_ALPHA) {
+    return AVIF_RESULT_OK;
+  }
+  decoder->decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA;
+  const avifResult res = avifDecoderReset(decoder->decoder);
+  if (res != AVIF_RESULT_OK) {
+    LOGE("Failed to reset decoder for alpha content. Status: %d", res);
+  }
+  return res;
+}
+
+avifResult AvifImageToRGBBufferFromImage(avifImage* image, void* pixels,
+                                         size_t row_bytes) {
+  avifRGBImage rgb_image;
+  avifRGBImageSetDefaults(&rgb_image, image);
+  rgb_image.format = AVIF_RGB_FORMAT_RGBA;
+  rgb_image.depth = 8;
+  rgb_image.pixels = static_cast<uint8_t*>(pixels);
+  rgb_image.rowBytes = row_bytes;
+  // Android always sees the Bitmaps as premultiplied with alpha when it renders
+  // them:
+  // https://developer.android.com/reference/android/graphics/Bitmap#setPremultiplied(boolean)
+  rgb_image.alphaPremultiplied = AVIF_TRUE;
+  const avifResult res = avifImageYUVToRGB(image, &rgb_image);
+  if (res != AVIF_RESULT_OK) {
+    LOGE("Failed to convert YUV Pixels to RGB. Status: %d", res);
+  }
+  return res;
+}
+
+avifResult AvifImageToRGBBuffer(AvifDecoderWrapper* const decoder, void* pixels,
+                                uint32_t dst_width, uint32_t dst_height,
+                                size_t row_bytes, avifRGBFormat format,
+                                int depth, avifBool is_float) {
+  avifResult res;
+  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
+      nullptr, avifImageDestroy);
+  avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
+                                           scaling_image);
+  if (image == nullptr) {
+    return res;
+  }
+
+  if (format == AVIF_RGB_FORMAT_RGBA && depth == 8 && !is_float) {
+    return AvifImageToRGBBufferFromImage(image, pixels, row_bytes);
+  }
+
+  avifRGBImage rgb_image;
+  avifRGBImageSetDefaults(&rgb_image, image);
+  rgb_image.format = format;
+  rgb_image.depth = depth;
+  rgb_image.isFloat = is_float;
+  rgb_image.pixels = static_cast<uint8_t*>(pixels);
+  rgb_image.rowBytes = row_bytes;
+  rgb_image.alphaPremultiplied = AVIF_TRUE;
+  res = avifImageYUVToRGB(image, &rgb_image);
+  if (res != AVIF_RESULT_OK) {
+    LOGE("Failed to convert YUV Pixels to RGB. Status: %d", res);
+  }
+  return res;
+}
+
+// Packs 8-bit Y into RGB565 as R5[15:11]=Y[1:0], G6[10:5]=Y[7:2], B5[4:0]=0.
+// Display-side ColorMatrix (31/255·R + 252/255·G) recovers Y.
+constexpr uint16_t PackGray565(uint8_t y) {
+  const uint16_t hi = static_cast<uint16_t>(y >> 2);  // upper 6 bits → G
+  const uint16_t lo = static_cast<uint16_t>(y & 3);   // lower 2 bits → R
+  return static_cast<uint16_t>((lo << 11) | (hi << 5));  // B=0
+}
+
+constexpr uint8_t LimitedToFull8(int v) {
+  const int e = ((v - 16) * 255 + 109) / 219;
+  if (e < 0) {
+    return 0;
+  }
+  if (e > 255) {
+    return 255;
+  }
+  return static_cast<uint8_t>(e);
+}
+
+// Full-range: identity then pack. Limited-range: expand [16,235] → [0,255]
+// then pack. Compile-time tables in .rodata.
+// Plain arrays (not std::array): non-const std::array::operator[] is only
+// constexpr in C++17+, while the Android NDK JNI target defaults older.
+struct Gray565LutTable {
+  uint16_t data[256];
+};
+
+struct LimitedToFullLutTable {
+  uint8_t data[256];
+};
+
+constexpr Gray565LutTable MakeGray565LutFull() {
+  Gray565LutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = PackGray565(static_cast<uint8_t>(v));
+  }
+  return table;
+}
+
+constexpr Gray565LutTable MakeGray565LutLimited() {
+  Gray565LutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = PackGray565(LimitedToFull8(v));
+  }
+  return table;
+}
+
+constexpr LimitedToFullLutTable MakeLimitedToFullLut() {
+  LimitedToFullLutTable table = {};
+  for (int v = 0; v < 256; ++v) {
+    table.data[v] = LimitedToFull8(v);
+  }
+  return table;
+}
+
+constexpr Gray565LutTable kGray565LutFull = MakeGray565LutFull();
+constexpr Gray565LutTable kGray565LutLimited = MakeGray565LutLimited();
+constexpr LimitedToFullLutTable kLimitedToFullLut = MakeLimitedToFullLut();
+
+const uint16_t* Gray565Lut(avifRange range) {
+  return range == AVIF_RANGE_LIMITED ? kGray565LutLimited.data
+                                     : kGray565LutFull.data;
+}
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+// Pack 8 full-range Y samples: R5=Y[1:0], G6=Y[7:2], B5=0.
+static inline uint16x8_t PackGray565Neon(uint16x8_t y) {
+  const uint16x8_t g = vshlq_n_u16(vshrq_n_u16(y, 2), 5);
+  return vsliq_n_u16(g, vandq_u16(y, vdupq_n_u16(3)), 11);
+}
+
+static inline void PackGray565Store16(uint8x16_t y8, uint16_t* dst) {
+#if defined(__aarch64__)
+  const uint16x8_t y_lo = vmovl_u8(vget_low_u8(y8));
+  const uint16x8_t y_hi = vmovl_high_u8(y8);
+#else
+  const uint16x8_t y_lo = vmovl_u8(vget_low_u8(y8));
+  const uint16x8_t y_hi = vmovl_u8(vget_high_u8(y8));
+#endif
+  vst1q_u16(dst, PackGray565Neon(y_lo));
+  vst1q_u16(dst + 8, PackGray565Neon(y_hi));
+}
+
+#if defined(__aarch64__)
+// 256-byte LUT lookup via four 64-byte TBL windows (out-of-range lanes → 0).
+static inline uint8x16_t Tbl256(uint8x16_t idx, const uint8x16x4_t& t0,
+                               const uint8x16x4_t& t1, const uint8x16x4_t& t2,
+                               const uint8x16x4_t& t3) {
+  const uint8x16_t r0 = vqtbl4q_u8(t0, idx);
+  const uint8x16_t r1 = vqtbl4q_u8(t1, vsubq_u8(idx, vdupq_n_u8(64)));
+  const uint8x16_t r2 = vqtbl4q_u8(t2, vsubq_u8(idx, vdupq_n_u8(128)));
+  const uint8x16_t r3 = vqtbl4q_u8(t3, vsubq_u8(idx, vdupq_n_u8(192)));
+  return vorrq_u8(vorrq_u8(r0, r1), vorrq_u8(r2, r3));
+}
+
+static void PackGray565RowNeonLimited(const uint8_t* src, uint16_t* dst,
+                                      uint32_t width) {
+  const uint8_t* expand = kLimitedToFullLut.data;
+  const uint8x16x4_t t0 = vld1q_u8_x4(expand + 0);
+  const uint8x16x4_t t1 = vld1q_u8_x4(expand + 64);
+  const uint8x16x4_t t2 = vld1q_u8_x4(expand + 128);
+  const uint8x16x4_t t3 = vld1q_u8_x4(expand + 192);
+
+  uint32_t x = 0;
+  for (; x + 32 <= width; x += 32) {
+    __builtin_prefetch(src + x + 64);
+    const uint8x16_t y0 = Tbl256(vld1q_u8(src + x), t0, t1, t2, t3);
+    const uint8x16_t y1 = Tbl256(vld1q_u8(src + x + 16), t0, t1, t2, t3);
+    PackGray565Store16(y0, dst + x);
+    PackGray565Store16(y1, dst + x + 16);
+  }
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(Tbl256(vld1q_u8(src + x), t0, t1, t2, t3), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    const uint8x8_t y8 = vget_low_u8(Tbl256(vcombine_u8(vld1_u8(src + x),
+                                                        vdup_n_u8(0)),
+                                            t0, t1, t2, t3));
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(y8)));
+  }
+  const uint16_t* lut = kGray565LutLimited.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+
+static void PackGray565RowNeonFull(const uint8_t* src, uint16_t* dst,
+                                   uint32_t width) {
+  uint32_t x = 0;
+  for (; x + 32 <= width; x += 32) {
+    __builtin_prefetch(src + x + 64);
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+    PackGray565Store16(vld1q_u8(src + x + 16), dst + x + 16);
+  }
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutFull.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+#else   // !__aarch64__ (ARMv7 NEON)
+// Limited [16,235] → full [0,255]: e = ((y-16)*255+109)/219, with y clamped.
+// Uses (n * 1197) >> 18, exact for all 8-bit inputs after clamp.
+static uint16x8_t LimitedToFull8Neon(uint8x8_t y8) {
+  y8 = vmax_u8(y8, vdup_n_u8(16));
+  y8 = vmin_u8(y8, vdup_n_u8(235));
+  const uint16x8_t t = vsubq_u16(vmovl_u8(y8), vdupq_n_u16(16));
+  const uint16x8_t n = vmlaq_n_u16(vdupq_n_u16(109), t, 255);
+  const uint32x4_t e_lo =
+      vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_low_u16(n)), 1197), 18);
+  const uint32x4_t e_hi =
+      vshrq_n_u32(vmulq_n_u32(vmovl_u16(vget_high_u16(n)), 1197), 18);
+  return vcombine_u16(vmovn_u32(e_lo), vmovn_u32(e_hi));
+}
+
+static void PackGray565RowNeonLimited(const uint8_t* src, uint16_t* dst,
+                                      uint32_t width) {
+  uint32_t x = 0;
+  for (; x + 16 <= width; x += 16) {
+    const uint8x16_t y8 = vld1q_u8(src + x);
+    vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vget_low_u8(y8))));
+    vst1q_u16(dst + x + 8,
+              PackGray565Neon(LimitedToFull8Neon(vget_high_u8(y8))));
+  }
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(LimitedToFull8Neon(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutLimited.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+
+static void PackGray565RowNeonFull(const uint8_t* src, uint16_t* dst,
+                                   uint32_t width) {
+  uint32_t x = 0;
+  for (; x + 16 <= width; x += 16) {
+    PackGray565Store16(vld1q_u8(src + x), dst + x);
+  }
+  for (; x + 8 <= width; x += 8) {
+    vst1q_u16(dst + x, PackGray565Neon(vmovl_u8(vld1_u8(src + x))));
+  }
+  const uint16_t* lut = kGray565LutFull.data;
+  for (; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+}
+#endif  // __aarch64__
+
+static void PackGray565RowNeon(const uint8_t* src, uint16_t* dst, uint32_t width,
+                               avifRange range) {
+  if (range == AVIF_RANGE_LIMITED) {
+    PackGray565RowNeonLimited(src, dst, width);
+  } else {
+    PackGray565RowNeonFull(src, dst, width);
+  }
+}
+#endif  // __ARM_NEON
+
+static void PackGray565Row(const uint8_t* src, uint16_t* dst, uint32_t width,
+                           avifRange range) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+  PackGray565RowNeon(src, dst, width, range);
+#else
+  const uint16_t* lut = Gray565Lut(range);
+  for (uint32_t x = 0; x < width; ++x) {
+    dst[x] = lut[src[x]];
+  }
+#endif
+}
+
+avifResult AvifImageToGray565Buffer(const HardwareBufferApi& hw_api,
+                                    AHardwareBuffer* hw_buffer,
+                                    avifImage* image, size_t dst_row_bytes) {
+  void* pixels = nullptr;
+  if (hw_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, nullptr,
+                  &pixels) != 0) {
+    LOGE("AHardwareBuffer_lock failed.");
+    return AVIF_RESULT_UNKNOWN_ERROR;
+  }
+
+  const uint8_t* src_y = image->yuvPlanes[AVIF_CHAN_Y];
+  const uint32_t width = image->width;
+  const uint32_t height = image->height;
+  const size_t src_row_bytes = image->yuvRowBytes[AVIF_CHAN_Y];
+  uint8_t* dst_bytes = static_cast<uint8_t*>(pixels);
+  const avifRange range = image->yuvRange;
+
+  for (uint32_t row = 0; row < height; ++row) {
+    const uint8_t* src_row = src_y + row * src_row_bytes;
+    uint16_t* dst_row =
+        reinterpret_cast<uint16_t*>(dst_bytes + row * dst_row_bytes);
+#if defined(__aarch64__)
+    if (row + 1 < height) {
+      __builtin_prefetch(src_y + (row + 1) * src_row_bytes);
+    }
+#endif
+    PackGray565Row(src_row, dst_row, width, range);
+  }
+
+  hw_api.unlock(hw_buffer, nullptr);
+  return AVIF_RESULT_OK;
+}
+
+bool ShouldUseGray565Output(avifImage* image, bool allow_gray565) {
+  if (!allow_gray565) {
+    return false;
+  }
+  if (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400) {
+    return false;
+  }
+  // Prefer alphaPresent-equivalent: if alpha was decoded, alphaPlane is set.
+  if (image->alphaPlane != nullptr) {
+    return false;
+  }
+  if (image->depth != 8) {
+    return false;
+  }
+  return true;
+}
+
+// R8 output: one byte per pixel, written by the GPU (see gles_r8_writer.h).
+// Same eligibility as Gray565 plus the API 33 Bitmap requirement. This is
+// checked before Gray565, so both flags set means R8 first, Gray565 second.
+bool ShouldUseR8Output(avifImage* image, bool allow_r8) {
+  if (!allow_r8) {
+    return false;
+  }
+  if (image->yuvFormat != AVIF_PIXEL_FORMAT_YUV400) {
+    return false;
+  }
+  if (image->alphaPlane != nullptr) {
+    return false;
+  }
+  if (image->depth != 8) {
+    return false;
+  }
+  if (GetDeviceApiLevel() < kMinApiLevelForR8Bitmap) {
+    return false;
   }
   return true;
 }
@@ -141,10 +679,9 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
     LOGE("AndroidBitmap_getInfo failed.");
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
-  // Ensure that the bitmap format is RGBA_8888, RGB_565 or RGBA_F16.
-  if (bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 &&
-      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGB_565 &&
-      bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_F16) {
+  // Bitmap soft path: RGBA_8888 only. RGB_565 is reserved for YUV400 Gray565
+  // HardwareBuffer packing (see PackGray565 / allowGray565), not true-color decode.
+  if (bitmap_info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
     LOGE("Bitmap format (%d) is not supported.", bitmap_info.format);
     return AVIF_RESULT_NOT_IMPLEMENTED;
   }
@@ -154,84 +691,219 @@ avifResult AvifImageToBitmap(JNIEnv* const env,
     LOGE("Failed to lock Bitmap.");
     return AVIF_RESULT_UNKNOWN_ERROR;
   }
-  avifImage* image;
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> cropped_image(
-      nullptr, avifImageDestroy);
-  avifResult res;
-  if (decoder->decoder->image->width == decoder->crop.width &&
-      decoder->decoder->image->height == decoder->crop.height &&
-      decoder->crop.x == 0 && decoder->crop.y == 0) {
-    image = decoder->decoder->image;
-  } else {
-    cropped_image.reset(avifImageCreateEmpty());
-    if (cropped_image == nullptr) {
-      LOGE("Failed to allocate cropped image.");
-      return AVIF_RESULT_OUT_OF_MEMORY;
-    }
-    res = avifImageSetViewRect(cropped_image.get(), decoder->decoder->image,
-                               &decoder->crop);
-    if (res != AVIF_RESULT_OK) {
-      LOGE("Failed to set crop rectangle. Status: %d", res);
-      return res;
-    }
-    image = cropped_image.get();
-  }
-  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> image_copy(
-      nullptr, avifImageDestroy);
-  if (image->width != bitmap_info.width ||
-      image->height != bitmap_info.height) {
-    // If the avifImage does not own the planes, then create a copy for safe
-    // scaling.
-    if (!image->imageOwnsYUVPlanes || !image->imageOwnsAlphaPlane) {
-      image_copy.reset(avifImageCreateEmpty());
-      if (image_copy == nullptr) {
-        LOGE("Failed to allocate image for scaling.");
-        return AVIF_RESULT_OUT_OF_MEMORY;
-      }
-      res = avifImageCopy(image_copy.get(), image, AVIF_PLANES_ALL);
-      if (res != AVIF_RESULT_OK) {
-        LOGE("Failed to make a copy of the image for scaling. Status: %d", res);
-        return res;
-      }
-      image = image_copy.get();
-    }
-    avifDiagnostics diag;
-    res = avifImageScale(image, bitmap_info.width, bitmap_info.height, &diag);
-    if (res != AVIF_RESULT_OK) {
-      LOGE("Failed to scale image. Status: %d", res);
-      return res;
-    }
+
+  const avifResult res = AvifImageToRGBBuffer(
+      decoder, bitmap_pixels, bitmap_info.width, bitmap_info.height,
+      bitmap_info.stride, AVIF_RGB_FORMAT_RGBA, /*depth=*/8, /*is_float=*/AVIF_FALSE);
+  AndroidBitmap_unlockPixels(env, bitmap);
+  return res;
+}
+
+jobject AvifImageToJavaHardwareBuffer(JNIEnv* const env,
+                                      AvifDecoderWrapper* const decoder,
+                                      uint32_t dst_width, uint32_t dst_height,
+                                      bool allow_gray565, bool allow_r8) {
+  const HardwareBufferApi& hw_api = GetHardwareBufferApi();
+  if (!hw_api.available) {
+    LOGE("HardwareBuffer API is unavailable. Check earlier avif_jni logs for "
+         "dlopen/dlsym errors.");
+    return nullptr;
   }
 
-  avifRGBImage rgb_image;
-  avifRGBImageSetDefaults(&rgb_image, image);
-  if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_F16) {
-    rgb_image.depth = 16;
-    rgb_image.isFloat = AVIF_TRUE;
-  } else if (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
-    rgb_image.format = AVIF_RGB_FORMAT_RGB_565;
-    rgb_image.depth = 8;
+  avifResult res;
+  std::unique_ptr<avifImage, decltype(&avifImageDestroy)> scaling_image(
+      nullptr, avifImageDestroy);
+  avifImage* image = PrepareImageForOutput(decoder, dst_width, dst_height, &res,
+                                           scaling_image);
+  if (image == nullptr) {
+    return nullptr;
+  }
+
+  AHardwareBuffer_Desc desc = {};
+  desc.width = dst_width;
+  desc.height = dst_height;
+  desc.layers = 1;
+  desc.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY |
+               AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+
+  AHardwareBuffer* hw_buffer = nullptr;
+
+  // Priority: R8 (GPU write, 1 B/px) -> Gray565 (CPU pack, 2 B/px) -> RGBA.
+  // Every R8 failure is soft: log, release, and continue with the CPU paths.
+  bool use_r8 = ShouldUseR8Output(image, allow_r8);
+  if (use_r8) {
+    AHardwareBuffer_Desc r8_desc = desc;
+    r8_desc.format = kAHardwareBufferFormatR8Unorm;
+    // No CPU usage bits: the buffer is only ever written by the GPU
+    // (GPU_COLOR_OUTPUT) and read by HWUI/Skia (GPU_SAMPLED_IMAGE).
+    r8_desc.usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+                    AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+    if (hw_api.allocate(&r8_desc, &hw_buffer) != 0) {
+      LOGE("AHardwareBuffer_allocate failed for R8; falling back.");
+      use_r8 = false;
+      hw_buffer = nullptr;
+    } else if (!avif_jni::WriteYPlaneToR8HardwareBuffer(
+                   hw_buffer, image->yuvPlanes[AVIF_CHAN_Y],
+                   image->yuvRowBytes[AVIF_CHAN_Y], image->width,
+                   image->height, image->yuvRange == AVIF_RANGE_LIMITED)) {
+      LOGE("GLES R8 write failed; falling back.");
+      hw_api.release(hw_buffer);
+      hw_buffer = nullptr;
+      use_r8 = false;
+    }
+  }
+  if (use_r8) {
+    jobject java_buffer = hw_api.to_hardware_buffer(env, hw_buffer);
+    hw_api.release(hw_buffer);
+    if (java_buffer == nullptr) {
+      LOGE("AHardwareBuffer_toHardwareBuffer failed.");
+      if (JniExceptionCheck(env)) {
+        return nullptr;
+      }
+    }
+    return java_buffer;
+  }
+
+  bool use_gray565 = ShouldUseGray565Output(image, allow_gray565);
+
+  if (use_gray565) {
+    desc.format = AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM;
+    if (hw_api.allocate(&desc, &hw_buffer) != 0) {
+      LOGE("AHardwareBuffer_allocate failed for R5G6B5; falling back to RGBA.");
+      use_gray565 = false;
+      hw_buffer = nullptr;
+    }
+  }
+  if (!use_gray565) {
+    desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    if (hw_api.allocate(&desc, &hw_buffer) != 0) {
+      LOGE("AHardwareBuffer_allocate failed.");
+      return nullptr;
+    }
+  }
+  hw_api.describe(hw_buffer, &desc);
+
+  avifResult fill_res;
+  if (use_gray565) {
+    // AHardwareBuffer_Desc.stride is in pixels, not bytes (same as the RGBA
+    // path's `desc.stride * 4`). RGB565 is 2 bytes/pixel.
+    fill_res = AvifImageToGray565Buffer(
+        hw_api, hw_buffer, image, static_cast<size_t>(desc.stride) * 2);
   } else {
-    rgb_image.depth = 8;
+    void* pixels = nullptr;
+    if (hw_api.lock(hw_buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, nullptr,
+                    &pixels) != 0) {
+      LOGE("AHardwareBuffer_lock failed.");
+      hw_api.release(hw_buffer);
+      return nullptr;
+    }
+    fill_res = AvifImageToRGBBufferFromImage(
+        image, pixels, static_cast<size_t>(desc.stride) * 4);
+    hw_api.unlock(hw_buffer, nullptr);
   }
-  rgb_image.pixels = static_cast<uint8_t*>(bitmap_pixels);
-  rgb_image.rowBytes = bitmap_info.stride;
-  // Android always sees the Bitmaps as premultiplied with alpha when it renders
-  // them:
-  // https://developer.android.com/reference/android/graphics/Bitmap#setPremultiplied(boolean)
-  rgb_image.alphaPremultiplied = AVIF_TRUE;
-  res = avifImageYUVToRGB(image, &rgb_image);
-  AndroidBitmap_unlockPixels(env, bitmap);
-  if (res != AVIF_RESULT_OK) {
-    LOGE("Failed to convert YUV Pixels to RGB. Status: %d", res);
-    return res;
+  if (fill_res != AVIF_RESULT_OK) {
+    hw_api.release(hw_buffer);
+    return nullptr;
   }
-  return AVIF_RESULT_OK;
+
+  jobject java_buffer = hw_api.to_hardware_buffer(env, hw_buffer);
+  hw_api.release(hw_buffer);
+  if (java_buffer == nullptr) {
+    LOGE("AHardwareBuffer_toHardwareBuffer failed.");
+    if (JniExceptionCheck(env)) {
+      return nullptr;
+    }
+  }
+  return java_buffer;
+}
+
+jobject DecodeToHardwareBuffer(JNIEnv* const env, jobject encoded, int length,
+                               int target_width, int target_height,
+                               int threads, bool allow_gray565, bool allow_r8) {
+  const uint8_t* buffer = nullptr;
+  size_t size = 0;
+  if (!ValidateDirectBuffer(env, encoded, length, &buffer, &size)) {
+    return nullptr;
+  }
+  AvifDecoderWrapper decoder;
+  if (!CreateDecoderAndParse(&decoder, buffer, size,
+                             getThreadCount(threads))) {
+    return nullptr;
+  }
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  GetTargetDimensions(&decoder, target_width, target_height, &dst_width,
+                      &dst_height);
+  // HardwareBuffer ends as R8 / gray565 (no alpha) or RGBA (needs alpha when
+  // present).
+  if (EnsureAlphaContentIfNeeded(
+          &decoder, decoder.decoder->alphaPresent) != AVIF_RESULT_OK) {
+    return nullptr;
+  }
+  if (avifDecoderNextImage(decoder.decoder) != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image for HardwareBuffer output.");
+    return nullptr;
+  }
+  return AvifImageToJavaHardwareBuffer(env, &decoder, dst_width, dst_height,
+                                       allow_gray565, allow_r8);
+}
+
+jobject NextFrameToHardwareBuffer(JNIEnv* const env,
+                                  AvifDecoderWrapper* const decoder,
+                                  int target_width, int target_height,
+                                  bool allow_gray565, bool allow_r8) {
+  if (EnsureAlphaContentIfNeeded(decoder, decoder->decoder->alphaPresent) !=
+      AVIF_RESULT_OK) {
+    return nullptr;
+  }
+  const avifResult decode_result = avifDecoderNextImage(decoder->decoder);
+  if (decode_result != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
+    return nullptr;
+  }
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
+                      &dst_height);
+  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height,
+                                       allow_gray565, allow_r8);
+}
+
+jobject NthFrameToHardwareBuffer(JNIEnv* const env,
+                                 AvifDecoderWrapper* const decoder, uint32_t n,
+                                 int target_width, int target_height,
+                                 bool allow_gray565, bool allow_r8) {
+  if (EnsureAlphaContentIfNeeded(decoder, decoder->decoder->alphaPresent) !=
+      AVIF_RESULT_OK) {
+    return nullptr;
+  }
+  const avifResult decode_result = avifDecoderNthImage(decoder->decoder, n);
+  if (decode_result != AVIF_RESULT_OK) {
+    LOGE("Failed to decode AVIF image. Status: %d", decode_result);
+    return nullptr;
+  }
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  GetTargetDimensions(decoder, target_width, target_height, &dst_width,
+                      &dst_height);
+  return AvifImageToJavaHardwareBuffer(env, decoder, dst_width, dst_height,
+                                       allow_gray565, allow_r8);
 }
 
 avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                            jobject bitmap) {
-  avifResult res = avifDecoderNextImage(decoder->decoder);
+  AndroidBitmapInfo bitmap_info;
+  if (AndroidBitmap_getInfo(env, bitmap, &bitmap_info) < 0) {
+    LOGE("AndroidBitmap_getInfo failed.");
+    return AVIF_RESULT_UNKNOWN_ERROR;
+  }
+  const bool need_alpha =
+      (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_8888);
+  avifResult res = EnsureAlphaContentIfNeeded(decoder, need_alpha);
+  if (res != AVIF_RESULT_OK) {
+    return res;
+  }
+  res = avifDecoderNextImage(decoder->decoder);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
@@ -241,7 +913,18 @@ avifResult DecodeNextImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
 
 avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
                           uint32_t n, jobject bitmap) {
-  avifResult res = avifDecoderNthImage(decoder->decoder, n);
+  AndroidBitmapInfo bitmap_info;
+  if (AndroidBitmap_getInfo(env, bitmap, &bitmap_info) < 0) {
+    LOGE("AndroidBitmap_getInfo failed.");
+    return AVIF_RESULT_UNKNOWN_ERROR;
+  }
+  const bool need_alpha =
+      (bitmap_info.format == ANDROID_BITMAP_FORMAT_RGBA_8888);
+  avifResult res = EnsureAlphaContentIfNeeded(decoder, need_alpha);
+  if (res != AVIF_RESULT_OK) {
+    return res;
+  }
+  res = avifDecoderNthImage(decoder->decoder, n);
   if (res != AVIF_RESULT_OK) {
     LOGE("Failed to decode AVIF image. Status: %d", res);
     return res;
@@ -250,15 +933,10 @@ avifResult DecodeNthImage(JNIEnv* const env, AvifDecoderWrapper* const decoder,
 }
 
 int getThreadCount(int threads) {
-  if (threads < 0) {
-    return android_getCpuCount();
-  }
-  if (threads == 0) {
-    // Empirically, on Android devices with more than 1 core, decoding with 2
-    // threads is almost always better than using as many threads as CPU cores.
-    return std::min(android_getCpuCount(), 2);
-  }
-  return threads;
+  // RAM-oriented Android build: always decode with a single thread to avoid
+  // dav1d worker / scratch buffers that scale with maxThreads.
+  (void)threads;
+  return 1;
 }
 
 // Checks if there is a pending JNI exception that will be thrown when the
@@ -326,9 +1004,9 @@ FUNC(jboolean, getInfo, jobject encoded, int length, jobject info) {
   GET_FIELD_ID(height, info_class, "height", "I", false);
   GET_FIELD_ID(depth, info_class, "depth", "I", false);
   GET_FIELD_ID(alpha_present, info_class, "alphaPresent", "Z", false);
-  env->SetIntField(info, width, decoder.crop.width);
+  env->SetIntField(info, width, decoder.decoder->image->width);
   CHECK_EXCEPTION(false);
-  env->SetIntField(info, height, decoder.crop.height);
+  env->SetIntField(info, height, decoder.decoder->image->height);
   CHECK_EXCEPTION(false);
   env->SetIntField(info, depth, decoder.decoder->image->depth);
   CHECK_EXCEPTION(false);
@@ -378,9 +1056,9 @@ FUNC(jlong, createDecoder, jobject encoded, jint length, jint threads) {
                0);
   GET_FIELD_ID(frame_durations_id, avif_decoder_class, "frameDurations", "[D",
                0);
-  env->SetIntField(thiz, width_id, decoder->crop.width);
+  env->SetIntField(thiz, width_id, decoder->decoder->image->width);
   CHECK_EXCEPTION(0);
-  env->SetIntField(thiz, height_id, decoder->crop.height);
+  env->SetIntField(thiz, height_id, decoder->decoder->image->height);
   CHECK_EXCEPTION(0);
   env->SetIntField(thiz, depth_id, decoder->decoder->image->depth);
   CHECK_EXCEPTION(0);
@@ -442,6 +1120,44 @@ FUNC(jint, nthFrame, jlong jdecoder, jint n, jobject bitmap) {
   AvifDecoderWrapper* const decoder =
       reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
   return DecodeNthImage(env, decoder, n, bitmap);
+}
+
+HW_FUNC(jobject, decodeToHardwareBufferNative, jobject encoded, int length,
+        jint target_width, jint target_height, jint threads,
+        jboolean allow_gray565, jboolean allow_r8) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  return DecodeToHardwareBuffer(env, encoded, length, target_width,
+                                target_height, threads,
+                                allow_gray565 != JNI_FALSE,
+                                allow_r8 != JNI_FALSE);
+}
+
+HW_FUNC(jobject, nextFrameHardwareBufferNative, jlong jdecoder, jint target_width,
+        jint target_height, jboolean allow_gray565, jboolean allow_r8) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  if (decoder == nullptr) {
+    return nullptr;
+  }
+  return NextFrameToHardwareBuffer(env, decoder, target_width, target_height,
+                                   allow_gray565 != JNI_FALSE,
+                                   allow_r8 != JNI_FALSE);
+}
+
+HW_FUNC(jobject, nthFrameHardwareBufferNative, jlong jdecoder, jint n,
+        jint target_width, jint target_height, jboolean allow_gray565,
+        jboolean allow_r8) {
+  IGNORE_UNUSED_HW_JNI_PARAMETERS;
+  AvifDecoderWrapper* const decoder =
+      reinterpret_cast<AvifDecoderWrapper*>(jdecoder);
+  if (decoder == nullptr) {
+    return nullptr;
+  }
+  return NthFrameToHardwareBuffer(env, decoder, static_cast<uint32_t>(n),
+                                  target_width, target_height,
+                                  allow_gray565 != JNI_FALSE,
+                                  allow_r8 != JNI_FALSE);
 }
 
 FUNC(jstring, resultToString, jint result) {

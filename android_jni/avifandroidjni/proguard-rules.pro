@@ -15,3 +15,6 @@
 -keep class org.aomedia.avif.android.AvifDecoder$Info {
   *;
 }
+-keep class org.aomedia.avif.android.AvifHardwareDecoder {
+  *;
+}
